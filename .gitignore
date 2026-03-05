@@ -1,0 +1,51 @@
+# Binários
+bin/
+/ciam
+/ciam-api
+
+# Output do go build
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Módulos (vendor opcional)
+vendor/
+
+# Dados locais do ciam (SQLite)
+*.db
+*.db-shm
+*.db-wal
+
+# Variáveis de ambiente
+.env
+.env.local
+.env.*.local
+
+# Docker override local
+docker-compose.override.yml
+
+# VSCode (mantém mcp.json mas ignora o restante)
+.vscode/*
+!.vscode/mcp.json
+
+# Logs
+*.log
+logs/
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+PLANO.md
+*.pdf

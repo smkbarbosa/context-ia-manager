@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "ciam": {
+      "command": "ciam",
+      "args": ["mcp"],
+      "env": {
+        "CIAM_API_URL": "http://localhost:8080",
+        "CIAM_OLLAMA_URL": "http://localhost:11434",
+        "CIAM_PROJECT_PATH": "${workspaceFolder}"
+      }
+    }
+  }
+}

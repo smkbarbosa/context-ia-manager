@@ -1,0 +1,355 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"path/filepath"
+	"strings"
+
+	djangoIndexer "github.com/smkbarbosa/context-ia-manager/internal/indexer/django"
+	"github.com/smkbarbosa/context-ia-manager/internal/config"
+	"github.com/smkbarbosa/context-ia-manager/internal/embeddings"
+	"github.com/smkbarbosa/context-ia-manager/internal/indexer"
+	"github.com/smkbarbosa/context-ia-manager/internal/memory"
+	"github.com/smkbarbosa/context-ia-manager/internal/search"
+	"github.com/smkbarbosa/context-ia-manager/internal/storage"
+)
+
+// Server is the ciam REST API.
+type Server struct {
+	cfg      *config.Config
+	db       *storage.DB
+	embedder *embeddings.Client
+	memory   *memory.Service
+}
+
+// NewServer initialises the server and its dependencies.
+func NewServer(cfg *config.Config) (*Server, error) {
+	db, err := storage.Open(cfg.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("storage: %w", err)
+	}
+
+	emb := embeddings.New(cfg.OllamaURL, cfg.OllamaModel)
+	mem := memory.New(db, emb)
+
+	return &Server{
+		cfg:      cfg,
+		db:       db,
+		embedder: emb,
+		memory:   mem,
+	}, nil
+}
+
+// ListenAndServe starts the HTTP server.
+func (s *Server) ListenAndServe(addr string) error {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("POST /api/v1/project/index", s.handleIndex)
+	mux.HandleFunc("POST /api/v1/project/chunks", s.handleChunks)
+	mux.HandleFunc("POST /api/v1/search", s.handleSearch)
+	mux.HandleFunc("POST /api/v1/memory/store", s.handleRemember)
+	mux.HandleFunc("POST /api/v1/memory/recall", s.handleRecall)
+	mux.HandleFunc("POST /api/v1/context/compress", s.handleCompress)
+	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
+	mux.HandleFunc("GET /api/v1/project/map", s.handleDjangoMap)
+
+	fmt.Printf("ciam API listening on %s\n", addr)
+	return http.ListenAndServe(addr, mux)
+}
+
+// ---- Handlers ----
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectPath string `json:"project_path"`
+		ProjectID   string `json:"project_id"`
+		ProjectType string `json:"project_type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.ProjectID == "" {
+		req.ProjectID = filepath.Base(req.ProjectPath)
+	}
+
+	if req.ProjectType == "" {
+		req.ProjectType = indexer.DetectType(req.ProjectPath)
+	}
+
+	var chunks []storage.Chunk
+	var err error
+
+	if req.ProjectType == "django" {
+		idx := djangoIndexer.New(req.ProjectPath, req.ProjectID)
+		chunks, err = idx.Index()
+	} else {
+		idx := indexer.New(req.ProjectPath, req.ProjectID)
+		chunks, err = idx.Index()
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Generate embeddings for all chunks
+	texts := make([]string, len(chunks))
+	for i, c := range chunks {
+		texts[i] = c.Content
+	}
+	vectors, err := s.embedder.EmbedBatch(texts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
+		return
+	}
+	for i := range chunks {
+		chunks[i].Embedding = vectors[i]
+	}
+
+	if err := s.db.UpsertChunks(req.ProjectID, chunks); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project_id":      req.ProjectID,
+		"project_type":    req.ProjectType,
+		"chunks_indexed":  len(chunks),
+		"files_processed": countFiles(chunks),
+	})
+}
+
+// handleChunks receives pre-chunked text from the CLI (which ran on the host),
+// generates embeddings via Ollama and stores everything in SQLite.
+// This is the primary indexing path when the API runs inside Docker.
+func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectID   string `json:"project_id"`
+		ProjectType string `json:"project_type"`
+		Chunks      []struct {
+			FilePath  string `json:"file_path"`
+			ChunkType string `json:"chunk_type"`
+			Content   string `json:"content"`
+		} `json:"chunks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Chunks) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"project_id":     req.ProjectID,
+			"chunks_indexed": 0,
+			"files_processed": 0,
+		})
+		return
+	}
+
+	chunks := make([]storage.Chunk, len(req.Chunks))
+	texts := make([]string, len(req.Chunks))
+	for i, c := range req.Chunks {
+		chunks[i] = storage.Chunk{
+			ProjectID: req.ProjectID,
+			FilePath:  c.FilePath,
+			ChunkType: c.ChunkType,
+			Content:   c.Content,
+		}
+		texts[i] = c.Content
+	}
+
+	vectors, err := s.embedder.EmbedBatch(texts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
+		return
+	}
+	for i := range chunks {
+		chunks[i].Embedding = vectors[i]
+	}
+
+	if err := s.db.UpsertChunks(req.ProjectID, chunks); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project_id":      req.ProjectID,
+		"project_type":    req.ProjectType,
+		"chunks_indexed":  len(chunks),
+		"files_processed": countFiles(chunks),
+	})
+}
+
+func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query       string `json:"query"`
+		ProjectID   string `json:"project_id"`
+		ChunkType   string `json:"chunk_type"`
+		Limit       int    `json:"limit"`
+		Compress    bool   `json:"compress"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Limit == 0 {
+		req.Limit = 5
+	}
+
+	vec, err := s.embedder.Embed(req.Query)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
+		return
+	}
+
+	raw, err := s.db.SearchChunks(req.ProjectID, vec, req.ChunkType, req.Limit*3)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	results := search.Hybrid(req.Query, raw)
+	if len(results) > req.Limit {
+		results = results[:req.Limit]
+	}
+
+	type chunkOut struct {
+		FilePath  string  `json:"file_path"`
+		ChunkType string  `json:"chunk_type"`
+		Content   string  `json:"content"`
+		Score     float32 `json:"score"`
+	}
+
+	out := make([]chunkOut, len(results))
+	for i, r := range results {
+		content := r.Content
+		if req.Compress {
+			content = search.Compress(content)
+		}
+		out[i] = chunkOut{
+			FilePath:  r.FilePath,
+			ChunkType: r.ChunkType,
+			Content:   content,
+			Score:     r.RRFScore,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"chunks": out})
+}
+
+func (s *Server) handleRemember(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Content string `json:"content"`
+		Type    string `json:"type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Type == "" {
+		req.Type = "note"
+	}
+	if err := s.memory.Remember(req.Type, req.Content); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stored"})
+}
+
+func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Limit == 0 {
+		req.Limit = 5
+	}
+	memories, err := s.memory.Recall(req.Query, req.Limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"memories": memories})
+}
+
+func (s *Server) handleCompress(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	compressed := search.Compress(req.Content)
+	reduction := 0
+	if len(req.Content) > 0 {
+		reduction = 100 - (len(compressed)*100)/len(req.Content)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"compressed":       compressed,
+		"reduction_pct":    reduction,
+		"original_len":     len(req.Content),
+		"compressed_len":   len(compressed),
+	})
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	metrics, err := s.db.Metrics()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics)
+}
+
+func (s *Server) handleDjangoMap(w http.ResponseWriter, r *http.Request) {
+	projectPath := r.URL.Query().Get("path")
+	if projectPath == "" {
+		projectPath = s.cfg.ProjectPath
+	}
+	projectID := filepath.Base(projectPath)
+
+	idx := djangoIndexer.New(projectPath, projectID)
+	appMap, err := idx.AppMap()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, appMap)
+}
+
+// ---- helpers ----
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v) //nolint:errcheck
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func countFiles(chunks []storage.Chunk) int {
+	seen := map[string]bool{}
+	for _, c := range chunks {
+		seen[c.FilePath] = true
+	}
+	return len(seen)
+}
+
+// normaliseURL ensures the base URL has no trailing slash.
+func normaliseURL(u string) string {
+	return strings.TrimRight(u, "/")
+}
