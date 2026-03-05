@@ -180,8 +180,28 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 
 		vectors, err := s.embedder.EmbedBatch(texts)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
-			return
+			// Fallback: embed um a um, pulando chunks que excedem o contexto do modelo.
+			log.Printf("[index] batch embed falhou (%v); modo fallback chunk-a-chunk", err)
+			var goodChunks []storage.Chunk
+			for i, t := range texts {
+				vec, serr := s.embedder.Embed(t)
+				if serr != nil {
+					log.Printf("[index] ignorando chunk %d (%s): %v", start+i+1, chunks[i].FilePath, serr)
+					continue
+				}
+				c := chunks[i]
+				c.Embedding = vec
+				goodChunks = append(goodChunks, c)
+			}
+			if len(goodChunks) > 0 {
+				if err := s.db.UpsertChunks(req.ProjectID, goodChunks); err != nil {
+					writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+				indexed += len(goodChunks)
+			}
+			log.Printf("[index] progresso %d/%d chunks armazenados (fallback)", indexed, total)
+			continue
 		}
 		for i := range chunks {
 			chunks[i].Embedding = vectors[i]

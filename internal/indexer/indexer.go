@@ -62,6 +62,23 @@ var IndexableExtensions = map[string]bool{
 	".html": true, ".js": true, ".ts": true, ".sh": true,
 }
 
+// MaxChunkBytes é o limite máximo de bytes por chunk enviado para embedding.
+// nomic-embed-text (base) tem contexto de 2048 tokens; 1800 chars é margem segura.
+const MaxChunkBytes = 1800
+
+// Truncate caps s at MaxChunkBytes, appending a marker when trimmed.
+func Truncate(s string) string {
+	if len(s) <= MaxChunkBytes {
+		return s
+	}
+	// Trim to last newline within limit to avoid breaking mid-line.
+	cut := s[:MaxChunkBytes]
+	if idx := strings.LastIndex(cut, "\n"); idx > MaxChunkBytes/2 {
+		cut = cut[:idx]
+	}
+	return cut + "\n// [truncado: tamanho excede contexto do modelo]"
+}
+
 // FileChunk splits a file into overlapping chunks of maxLines each.
 func FileChunk(path, content string, maxLines, overlap int) []string {
 	lines := strings.Split(content, "\n")
@@ -122,14 +139,14 @@ func (idx *Indexer) Index() ([]storage.Chunk, error) {
 		}
 
 		rel, _ := filepath.Rel(idx.Root, path)
-		textChunks := FileChunk(rel, string(data), 80, 10)
+		textChunks := FileChunk(rel, string(data), 50, 5)
 
 		for _, c := range textChunks {
 			chunks = append(chunks, storage.Chunk{
 				ProjectID: idx.ProjectID,
 				FilePath:  rel,
 				ChunkType: "generic",
-				Content:   c,
+				Content:   Truncate(c),
 			})
 		}
 		return nil

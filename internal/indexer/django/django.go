@@ -99,12 +99,12 @@ func (idx *Indexer) Index() ([]storage.Chunk, error) {
 					return nil
 				}
 				rel, _ := filepath.Rel(idx.Root, path)
-				for _, c := range indexer.FileChunk(rel, string(data), 80, 10) {
+				for _, c := range indexer.FileChunk(rel, string(data), 50, 5) {
 					chunks = append(chunks, storage.Chunk{
 						ProjectID: idx.ProjectID,
 						FilePath:  rel,
 						ChunkType: "generic",
-						Content:   c,
+						Content:   indexer.Truncate(c),
 					})
 				}
 			}
@@ -120,12 +120,12 @@ func (idx *Indexer) Index() ([]storage.Chunk, error) {
 		content := string(data)
 		chunkType := inferType(d.Name(), content)
 
-		for _, c := range indexer.FileChunk(rel, content, 80, 10) {
+		for _, c := range indexer.FileChunk(rel, content, 50, 5) {
 			chunks = append(chunks, storage.Chunk{
 				ProjectID: idx.ProjectID,
 				FilePath:  rel,
 				ChunkType: chunkType,
-				Content:   c,
+				Content:   indexer.Truncate(c),
 			})
 		}
 		return nil
