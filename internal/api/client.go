@@ -92,10 +92,12 @@ func (c *Client) IndexChunks(projectID, projectType string, chunks []ChunkPayloa
 }
 
 // Search sends a search request to the API.
-func (c *Client) Search(query, chunkType string, limit int, compress bool) (*SearchResponse, error) {
+// projectID must match the ID used during indexing (typically filepath.Base of the project root).
+func (c *Client) Search(query, projectID, chunkType string, limit int, compress bool) (*SearchResponse, error) {
 	var result SearchResponse
 	err := c.post("/api/v1/search", map[string]any{
 		"query":      query,
+		"project_id": projectID,
 		"chunk_type": chunkType,
 		"limit":      limit,
 		"compress":   compress,

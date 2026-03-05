@@ -265,8 +265,8 @@ func (s *Server) handleSearch(_ context.Context, req mcpgo.CallToolRequest) (*mc
 	limit := req.GetInt("limit", 5)
 	compress := req.GetBool("compress", false)
 
-	_ = filepath.Base(projectPath)
-	results, err := s.client.Search(query, chunkType, limit, compress)
+	projectID := filepath.Base(projectPath)
+	results, err := s.client.Search(query, projectID, chunkType, limit, compress)
 	if err != nil {
 		return mcpgo.NewToolResultError(err.Error()), nil
 	}
@@ -324,8 +324,8 @@ func (s *Server) handleContext(_ context.Context, req mcpgo.CallToolRequest) (*m
 	chunkType := req.GetString("chunk_type", "")
 	limit := req.GetInt("limit", 5)
 
-	_ = filepath.Base(projectPath)
-	results, err := s.client.Search(query, chunkType, limit, true)
+	projectID := filepath.Base(projectPath)
+	results, err := s.client.Search(query, projectID, chunkType, limit, true)
 	if err != nil {
 		return mcpgo.NewToolResultError(err.Error()), nil
 	}
@@ -368,9 +368,11 @@ func (s *Server) docSearch(req mcpgo.CallToolRequest, chunkType string) (*mcpgo.
 	if err != nil {
 		return mcpgo.NewToolResultError(err.Error()), nil
 	}
+	projectPath := req.GetString("project_path", s.cfg.ProjectPath)
+	projectID := filepath.Base(projectPath)
 	limit := req.GetInt("limit", 5)
 
-	results, err := s.client.Search(query, chunkType, limit, false)
+	results, err := s.client.Search(query, projectID, chunkType, limit, false)
 	if err != nil {
 		return mcpgo.NewToolResultError(err.Error()), nil
 	}
@@ -402,11 +404,14 @@ func (s *Server) handleDecisionContext(_ context.Context, req mcpgo.CallToolRequ
 		{"## Implementation Plans", "plan"},
 	}
 
+	projectPath := req.GetString("project_path", s.cfg.ProjectPath)
+	projectID := filepath.Base(projectPath)
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Decision context for: %q\n\n", query))
 
 	for _, sec := range sections {
-		results, err := s.client.Search(query, sec.chunkType, limit, true)
+		results, err := s.client.Search(query, projectID, sec.chunkType, limit, true)
 		if err != nil {
 			sb.WriteString(fmt.Sprintf("%s\n_Error: %v_\n\n", sec.label, err))
 			continue
