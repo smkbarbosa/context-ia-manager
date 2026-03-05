@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/smkbarbosa/context-ia-manager/internal/api"
 	"github.com/smkbarbosa/context-ia-manager/internal/config"
@@ -29,6 +30,18 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("  Memories:       %d\n", status.MemoriesStored)
 		fmt.Printf("  Cache hits:     %d\n", status.CacheHits)
 		fmt.Printf("  Tokens saved:   ~%d\n", status.EstimatedTokensSaved)
+
+		if len(status.MCPStats) > 0 {
+			fmt.Println()
+			fmt.Println("  MCP tool usage:")
+			fmt.Printf("  %-28s  %8s  %6s  %10s  %s\n", "FERRAMENTA", "CHAMADAS", "ERROS", "LAT.MÉD.", "ÚLTIMA CHAMADA")
+			fmt.Printf("  %s\n", strings.Repeat("-", 80))
+			for _, t := range status.MCPStats {
+				fmt.Printf("  %-28s  %8d  %6d  %8.0fms  %s\n",
+					t.ToolName, t.CallCount, t.ErrorCount, t.AvgLatencyMs, t.LastCalledAt)
+			}
+			fmt.Printf("\n  Status page: %s/status\n", cfg.APIURL)
+		}
 		return nil
 	},
 }

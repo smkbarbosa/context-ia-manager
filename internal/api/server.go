@@ -1,8 +1,10 @@
 package api
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -18,6 +20,9 @@ import (
 	"github.com/smkbarbosa/context-ia-manager/internal/search"
 	"github.com/smkbarbosa/context-ia-manager/internal/storage"
 )
+
+//go:embed status.html
+var statusHTMLTmpl string
 
 // Server is the ciam REST API.
 type Server struct {
@@ -68,6 +73,15 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("POST /api/v1/context/compress", s.handleCompress)
 	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
 	mux.HandleFunc("GET /api/v1/project/map", s.handleDjangoMap)
+	mux.HandleFunc("POST /api/v1/metrics/tool", s.handleRecordTool)
+	mux.HandleFunc("GET /status", s.handleStatusPage)
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			http.Redirect(w, r, "/status", http.StatusFound)
+			return
+		}
+		http.NotFound(w, r)
+	})
 
 	fmt.Printf("ciam API listening on %s\n", addr)
 	return http.ListenAndServe(addr, mux)
@@ -410,6 +424,63 @@ func (s *Server) handleDjangoMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, appMap)
+}
+
+// handleRecordTool persists a single MCP tool invocation from the MCP server process.
+func (s *Server) handleRecordTool(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Tool      string `json:"tool"`
+		Query     string `json:"query"`
+		LatencyMs int64  `json:"latency_ms"`
+		IsError   bool   `json:"is_error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.db.RecordToolCall(req.Tool, req.Query, req.LatencyMs, req.IsError); err != nil {
+		log.Printf("[metrics] RecordToolCall failed: %v", err)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleStatusPage serves GET /status — HTML if the client accepts it, JSON otherwise.
+func (s *Server) handleStatusPage(w http.ResponseWriter, r *http.Request) {
+	metrics, err := s.db.Metrics()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	metrics.CacheHits = int(s.embedder.EmbedCacheHits()) + int(s.searchCache.Hits())
+
+	totalMCPCalls := int64(0)
+	for _, t := range metrics.MCPStats {
+		totalMCPCalls += t.CallCount
+	}
+
+	// Negotiate: HTML or JSON.
+	acceptHTML := strings.Contains(r.Header.Get("Accept"), "text/html")
+	if !acceptHTML {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"metrics":         metrics,
+			"total_mcp_calls": totalMCPCalls,
+		})
+		return
+	}
+
+	// Render HTML.
+	tmpl, err := template.New("status").Parse(statusHTMLTmpl)
+	if err != nil {
+		http.Error(w, "template error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	tmpl.Execute(w, map[string]any{ //nolint:errcheck
+		"Metrics":       metrics,
+		"TotalMCPCalls": totalMCPCalls,
+		"Now":           time.Now().Format("02/01/2006 15:04:05"),
+	})
 }
 
 // ---- helpers ----

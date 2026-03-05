@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="30">
+  <title>ciam — status</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      background: #0d1117; color: #c9d1d9;
+      padding: 2rem; line-height: 1.6;
+    }
+    h1 { color: #58a6ff; font-size: 1.4rem; margin-bottom: 0.25rem; }
+    .subtitle { color: #8b949e; font-size: 0.85rem; margin-bottom: 2rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2.5rem; }
+    .card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 1rem 1.25rem;
+    }
+    .card-label { font-size: 0.72rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.3rem; }
+    .card-value { font-size: 1.6rem; font-weight: 700; color: #58a6ff; }
+    .card-value.green { color: #3fb950; }
+    .card-value.yellow { color: #d29922; }
+    h2 { color: #c9d1d9; font-size: 1rem; margin-bottom: 0.75rem; border-bottom: 1px solid #21262d; padding-bottom: 0.4rem; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 2.5rem; font-size: 0.82rem; }
+    th { text-align: left; color: #8b949e; padding: 0.4rem 0.75rem; border-bottom: 1px solid #21262d; font-weight: 500; }
+    td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #161b22; vertical-align: top; }
+    tr:hover td { background: #161b22; }
+    .badge {
+      display: inline-block; padding: 0.1rem 0.5rem; border-radius: 12px;
+      font-size: 0.7rem; font-weight: 600;
+    }
+    .badge-blue { background: #1f3a5f; color: #58a6ff; }
+    .badge-red  { background: #3d1f1f; color: #f85149; }
+    .tag { display: inline-block; background: #21262d; color: #8b949e; border-radius: 4px; padding: 0.05rem 0.35rem; font-size: 0.72rem; margin: 0.1rem; }
+    .no-data { color: #8b949e; font-style: italic; font-size: 0.85rem; padding: 1rem 0; }
+    .footer { color: #484f58; font-size: 0.75rem; margin-top: 1rem; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; margin-right: 0.4rem; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  </style>
+</head>
+<body>
+  <h1><span class="dot"></span>ciam status</h1>
+  <p class="subtitle">Atualização automática a cada 30s &nbsp;·&nbsp; {{.Now}}</p>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-label">Projetos indexados</div>
+      <div class="card-value">{{.Metrics.ProjectsIndexed}}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Chunks totais</div>
+      <div class="card-value">{{.Metrics.TotalChunks}}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Memórias</div>
+      <div class="card-value">{{.Metrics.MemoriesStored}}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Cache hits</div>
+      <div class="card-value green">{{.Metrics.CacheHits}}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Tokens economizados ~</div>
+      <div class="card-value yellow">{{.Metrics.EstimatedTokensSaved}}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Chamadas MCP totais</div>
+      <div class="card-value">{{.TotalMCPCalls}}</div>
+    </div>
+  </div>
+
+  <h2>Ferramentas MCP</h2>
+  {{if .Metrics.MCPStats}}
+  <table>
+    <thead>
+      <tr>
+        <th>Ferramenta</th>
+        <th>Chamadas</th>
+        <th>Erros</th>
+        <th>Latência média</th>
+        <th>Última chamada</th>
+        <th>Queries frequentes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Metrics.MCPStats}}
+      <tr>
+        <td><span class="badge badge-blue">{{.ToolName}}</span></td>
+        <td>{{.CallCount}}</td>
+        <td>{{if gt .ErrorCount 0}}<span class="badge badge-red">{{.ErrorCount}}</span>{{else}}—{{end}}</td>
+        <td>{{printf "%.0fms" .AvgLatencyMs}}</td>
+        <td style="color:#8b949e; font-size:0.75rem">{{.LastCalledAt}}</td>
+        <td>
+          {{if .TopQueries}}{{range .TopQueries}}<span class="tag">{{.}}</span>{{end}}{{else}}—{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="no-data">Nenhuma chamada MCP registrada ainda. O assistente precisar usar as ferramentas para aparecerem aqui.</p>
+  {{end}}
+
+  <p class="footer">ciam · <a href="/api/v1/status" style="color:#58a6ff;">JSON</a></p>
+</body>
+</html>

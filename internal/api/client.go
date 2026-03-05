@@ -41,13 +41,24 @@ type SearchChunk struct {
 	Score     float32 `json:"score"`
 }
 
+// MCPToolStat mirrors storage.MCPToolStat for the CLI layer.
+type MCPToolStat struct {
+	ToolName     string   `json:"tool_name"`
+	CallCount    int64    `json:"call_count"`
+	ErrorCount   int64    `json:"error_count"`
+	AvgLatencyMs float64  `json:"avg_latency_ms"`
+	LastCalledAt string   `json:"last_called_at"`
+	TopQueries   []string `json:"top_queries,omitempty"`
+}
+
 // StatusResponse contains service metrics.
 type StatusResponse struct {
-	ProjectsIndexed      int `json:"ProjectsIndexed"`
-	TotalChunks          int `json:"TotalChunks"`
-	MemoriesStored       int `json:"MemoriesStored"`
-	CacheHits            int `json:"CacheHits"`
-	EstimatedTokensSaved int `json:"EstimatedTokensSaved"`
+	ProjectsIndexed      int           `json:"projects_indexed"`
+	TotalChunks          int           `json:"total_chunks"`
+	MemoriesStored       int           `json:"memories_stored"`
+	CacheHits            int           `json:"cache_hits"`
+	EstimatedTokensSaved int           `json:"estimated_tokens_saved"`
+	MCPStats             []MCPToolStat `json:"mcp_tools,omitempty"`
 }
 
 // Index sends an index request to the API.
@@ -110,6 +121,16 @@ func (c *Client) Recall(query string) ([]storage.Memory, error) {
 		"limit": 5,
 	}, &resp)
 	return resp.Memories, err
+}
+
+// RecordTool fires a tool usage metric to the API (fire-and-forget friendly).
+func (c *Client) RecordTool(tool, query string, latencyMs int64, isError bool) error {
+	return c.post("/api/v1/metrics/tool", map[string]any{
+		"tool":       tool,
+		"query":      query,
+		"latency_ms": latencyMs,
+		"is_error":   isError,
+	}, nil)
 }
 
 // Status returns service metrics.

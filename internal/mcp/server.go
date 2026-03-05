@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 "github.com/mark3labs/mcp-go/server"
@@ -44,100 +45,118 @@ server.WithToolCapabilities(true),
 	return server.ServeStdio(srv)
 }
 
+// withMetrics wraps a tool handler to measure latency and record usage metrics.
+// queryParam is the request field name used as the "query" label (empty = skip).
+// Recording is fire-and-forget so it never delays the response.
+func (s *Server) withMetrics(tool, queryParam string, fn func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error)) func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		start := time.Now()
+		result, err := fn(ctx, req)
+		latencyMs := time.Since(start).Milliseconds()
+		isError := err != nil || (result != nil && result.IsError)
+		query := ""
+		if queryParam != "" {
+			query = req.GetString(queryParam, "")
+		}
+		go s.client.RecordTool(tool, query, latencyMs, isError) //nolint:errcheck
+		return result, err
+	}
+}
+
 func (s *Server) registerTools(srv *server.MCPServer) {
 	srv.AddTool(
-mcpgo.NewTool("ciam_index",
-mcpgo.WithDescription("Index a project directory for semantic search. "+
-"Call this once when you open a new project or after significant changes."),
-mcpgo.WithString("project_path",
-mcpgo.Required(),
+		mcpgo.NewTool("ciam_index",
+			mcpgo.WithDescription("Index a project directory for semantic search. "+
+				"Call this once when you open a new project or after significant changes."),
+			mcpgo.WithString("project_path",
+				mcpgo.Required(),
 				mcpgo.Description("Absolute path to the project root")),
 			mcpgo.WithString("project_type",
-mcpgo.Description("Project type: django, python, generic (auto-detected if omitted)")),
+				mcpgo.Description("Project type: django, python, generic (auto-detected if omitted)")),
 		),
-		s.handleIndex,
+		s.withMetrics("ciam_index", "project_path", s.handleIndex),
 	)
 
 	srv.AddTool(
-mcpgo.NewTool("ciam_search",
-mcpgo.WithDescription("Semantic + keyword search in the indexed project. "+
-"Returns relevant code chunks ranked by hybrid score. "+
-"Use this INSTEAD of reading full files to reduce context tokens."),
-mcpgo.WithString("query",
-mcpgo.Required(),
+		mcpgo.NewTool("ciam_search",
+			mcpgo.WithDescription("Semantic + keyword search in the indexed project. "+
+				"Returns relevant code chunks ranked by hybrid score. "+
+				"Use this INSTEAD of reading full files to reduce context tokens."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
 				mcpgo.Description("Natural language or code search query")),
 			mcpgo.WithString("project_path",
-mcpgo.Description("Project path (defaults to workspace folder)")),
+				mcpgo.Description("Project path (defaults to workspace folder)")),
 			mcpgo.WithString("chunk_type",
-mcpgo.Description("Filter: model, view, url, serializer, task, test, generic")),
+				mcpgo.Description("Filter: model, view, url, serializer, task, test, generic")),
 			mcpgo.WithNumber("limit",
-mcpgo.Description("Max results (default 5)")),
+				mcpgo.Description("Max results (default 5)")),
 			mcpgo.WithBoolean("compress",
-mcpgo.Description("Compress results to reduce tokens (default false)")),
+				mcpgo.Description("Compress results to reduce tokens (default false)")),
 		),
-		s.handleSearch,
+		s.withMetrics("ciam_search", "query", s.handleSearch),
 	)
 
 	srv.AddTool(
-mcpgo.NewTool("ciam_remember",
-mcpgo.WithDescription("Store an important decision, note, or architectural choice "+
-"in persistent memory. Available across sessions and projects."),
-mcpgo.WithString("content",
-mcpgo.Required(),
+		mcpgo.NewTool("ciam_remember",
+			mcpgo.WithDescription("Store an important decision, note, or architectural choice "+
+				"in persistent memory. Available across sessions and projects."),
+			mcpgo.WithString("content",
+				mcpgo.Required(),
 				mcpgo.Description("The information to remember")),
 			mcpgo.WithString("type",
-mcpgo.Description("Memory type: decision, note, context, bug, architecture")),
+				mcpgo.Description("Memory type: decision, note, context, bug, architecture")),
 		),
-		s.handleRemember,
+		s.withMetrics("ciam_remember", "content", s.handleRemember),
 	)
 
 	srv.AddTool(
-mcpgo.NewTool("ciam_recall",
-mcpgo.WithDescription("Search stored memories from previous sessions."),
-mcpgo.WithString("query",
-mcpgo.Required(),
+		mcpgo.NewTool("ciam_recall",
+			mcpgo.WithDescription("Search stored memories from previous sessions."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
 				mcpgo.Description("What you want to recall")),
 		),
-		s.handleRecall,
+		s.withMetrics("ciam_recall", "query", s.handleRecall),
 	)
 
 	srv.AddTool(
-mcpgo.NewTool("ciam_compress",
-mcpgo.WithDescription("Compress code: keeps signatures, removes docstrings/comments. "+
-"Reduces tokens by 70-90%."),
-mcpgo.WithString("content",
-mcpgo.Required(),
+		mcpgo.NewTool("ciam_compress",
+			mcpgo.WithDescription("Compress code: keeps signatures, removes docstrings/comments. "+
+				"Reduces tokens by 70-90%."),
+			mcpgo.WithString("content",
+				mcpgo.Required(),
 				mcpgo.Description("Code content to compress")),
 		),
-		s.handleCompress,
+		s.withMetrics("ciam_compress", "", s.handleCompress),
 	)
 
 	srv.AddTool(
-mcpgo.NewTool("ciam_context",
-mcpgo.WithDescription("Search the project AND compress results in one call. "+
-"Maximum token efficiency — use this as your default discovery tool."),
-mcpgo.WithString("query",
-mcpgo.Required(),
+		mcpgo.NewTool("ciam_context",
+			mcpgo.WithDescription("Search the project AND compress results in one call. "+
+				"Maximum token efficiency — use this as your default discovery tool."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
 				mcpgo.Description("What you are looking for")),
 			mcpgo.WithString("project_path",
-mcpgo.Description("Project path (defaults to workspace folder)")),
+				mcpgo.Description("Project path (defaults to workspace folder)")),
 			mcpgo.WithString("chunk_type",
-mcpgo.Description("Filter: model, view, url, serializer, task, test, generic")),
+				mcpgo.Description("Filter: model, view, url, serializer, task, test, generic")),
 			mcpgo.WithNumber("limit",
-mcpgo.Description("Max results (default 5)")),
+				mcpgo.Description("Max results (default 5)")),
 		),
-		s.handleContext,
+		s.withMetrics("ciam_context", "query", s.handleContext),
 	)
 
 	srv.AddTool(
-mcpgo.NewTool("ciam_django_map",
-mcpgo.WithDescription("Returns a structural map of the Django project: "+
-"apps, models, views, urls, serializers. Great for onboarding."),
-mcpgo.WithString("project_path",
-mcpgo.Description("Absolute path to the Django project root")),
-),
-s.handleDjangoMap,
-)
+		mcpgo.NewTool("ciam_django_map",
+			mcpgo.WithDescription("Returns a structural map of the Django project: "+
+				"apps, models, views, urls, serializers. Great for onboarding."),
+			mcpgo.WithString("project_path",
+				mcpgo.Description("Absolute path to the Django project root")),
+		),
+		s.withMetrics("ciam_django_map", "", s.handleDjangoMap),
+	)
 
 	// ── Knowledge management tools (Fase 5) ─────────────────────────────────
 
@@ -153,7 +172,7 @@ s.handleDjangoMap,
 			mcpgo.WithNumber("limit",
 				mcpgo.Description("Max results (default 5)")),
 		),
-		s.handleADRSearch,
+		s.withMetrics("ciam_adr_search", "query", s.handleADRSearch),
 	)
 
 	srv.AddTool(
@@ -168,7 +187,7 @@ s.handleDjangoMap,
 			mcpgo.WithNumber("limit",
 				mcpgo.Description("Max results (default 5)")),
 		),
-		s.handlePRDSearch,
+		s.withMetrics("ciam_prd_search", "query", s.handlePRDSearch),
 	)
 
 	srv.AddTool(
@@ -183,7 +202,7 @@ s.handleDjangoMap,
 			mcpgo.WithNumber("limit",
 				mcpgo.Description("Max results (default 5)")),
 		),
-		s.handlePlanSearch,
+		s.withMetrics("ciam_plan_search", "query", s.handlePlanSearch),
 	)
 
 	srv.AddTool(
@@ -198,7 +217,7 @@ s.handleDjangoMap,
 			mcpgo.WithNumber("limit",
 				mcpgo.Description("Max results (default 5)")),
 		),
-		s.handleResearchSearch,
+		s.withMetrics("ciam_research_search", "query", s.handleResearchSearch),
 	)
 
 	srv.AddTool(
@@ -215,7 +234,7 @@ s.handleDjangoMap,
 			mcpgo.WithNumber("limit",
 				mcpgo.Description("Max results per source (default 3)")),
 		),
-		s.handleDecisionContext,
+		s.withMetrics("ciam_decision_context", "query", s.handleDecisionContext),
 	)
 }
 

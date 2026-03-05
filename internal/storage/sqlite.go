@@ -39,11 +39,12 @@ type Memory struct {
 
 // StatusMetrics are aggregated stats returned by /status.
 type StatusMetrics struct {
-	ProjectsIndexed      int
-	TotalChunks          int
-	MemoriesStored       int
-	CacheHits            int
-	EstimatedTokensSaved int
+	ProjectsIndexed      int           `json:"projects_indexed"`
+	TotalChunks          int           `json:"total_chunks"`
+	MemoriesStored       int           `json:"memories_stored"`
+	CacheHits            int           `json:"cache_hits"`
+	EstimatedTokensSaved int           `json:"estimated_tokens_saved"`
+	MCPStats             []MCPToolStat `json:"mcp_tools,omitempty"`
 }
 
 // DB wraps a SQLite connection with ciam-specific helpers.
@@ -92,8 +93,108 @@ func (db *DB) migrate() error {
 			key   TEXT PRIMARY KEY,
 			value INTEGER NOT NULL DEFAULT 0
 		);
+
+		CREATE TABLE IF NOT EXISTS mcp_tool_calls (
+			tool_name        TEXT PRIMARY KEY,
+			call_count       INTEGER NOT NULL DEFAULT 0,
+			error_count      INTEGER NOT NULL DEFAULT 0,
+			total_latency_ms INTEGER NOT NULL DEFAULT 0,
+			last_called_at   DATETIME
+		);
+
+		CREATE TABLE IF NOT EXISTS mcp_tool_queries (
+			tool_name  TEXT NOT NULL,
+			query      TEXT NOT NULL,
+			call_count INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (tool_name, query)
+		);
 	`)
 	return err
+}
+
+// MCPToolStat holds metrics for a single MCP tool.
+type MCPToolStat struct {
+	ToolName     string   `json:"tool_name"`
+	CallCount    int64    `json:"call_count"`
+	ErrorCount   int64    `json:"error_count"`
+	AvgLatencyMs float64  `json:"avg_latency_ms"`
+	LastCalledAt string   `json:"last_called_at"`
+	TopQueries   []string `json:"top_queries,omitempty"`
+}
+
+// RecordToolCall upserts a single MCP tool invocation into mcp_tool_calls.
+func (db *DB) RecordToolCall(toolName, query string, latencyMs int64, isError bool) error {
+	errVal := int64(0)
+	if isError {
+		errVal = 1
+	}
+	_, err := db.conn.Exec(`
+		INSERT INTO mcp_tool_calls (tool_name, call_count, error_count, total_latency_ms, last_called_at)
+		VALUES (?, 1, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(tool_name) DO UPDATE SET
+			call_count       = call_count + 1,
+			error_count      = error_count + ?,
+			total_latency_ms = total_latency_ms + ?,
+			last_called_at   = CURRENT_TIMESTAMP
+	`, toolName, errVal, latencyMs, errVal, latencyMs)
+	if err != nil {
+		return err
+	}
+	if query == "" {
+		return nil
+	}
+	if len(query) > 200 {
+		query = query[:200]
+	}
+	_, err = db.conn.Exec(`
+		INSERT INTO mcp_tool_queries (tool_name, query, call_count)
+		VALUES (?, ?, 1)
+		ON CONFLICT(tool_name, query) DO UPDATE SET call_count = call_count + 1
+	`, toolName, query)
+	return err
+}
+
+// MCPStats returns per-tool metrics sorted by call count descending.
+func (db *DB) MCPStats() ([]MCPToolStat, error) {
+	rows, err := db.conn.Query(`
+		SELECT tool_name, call_count, error_count, total_latency_ms,
+		       COALESCE(last_called_at, '')
+		FROM mcp_tool_calls
+		ORDER BY call_count DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []MCPToolStat
+	for rows.Next() {
+		var s MCPToolStat
+		var totalLatency int64
+		if err := rows.Scan(&s.ToolName, &s.CallCount, &s.ErrorCount, &totalLatency, &s.LastCalledAt); err != nil {
+			return nil, err
+		}
+		if s.CallCount > 0 {
+			s.AvgLatencyMs = float64(totalLatency) / float64(s.CallCount)
+		}
+		// Top 5 queries for this tool.
+		qRows, err := db.conn.Query(`
+			SELECT query FROM mcp_tool_queries
+			WHERE tool_name = ?
+			ORDER BY call_count DESC LIMIT 5
+		`, s.ToolName)
+		if err == nil {
+			for qRows.Next() {
+				var q string
+				if qRows.Scan(&q) == nil {
+					s.TopQueries = append(s.TopQueries, q)
+				}
+			}
+			qRows.Close()
+		}
+		stats = append(stats, s)
+	}
+	return stats, nil
 }
 
 // Close closes the underlying connection.
@@ -243,6 +344,11 @@ func (db *DB) Metrics() (*StatusMetrics, error) {
 
 	// rough estimate: average ~200 tokens per chunk, stored once, reused many times
 	m.EstimatedTokensSaved = m.TotalChunks * 180
+
+	mcpStats, err := db.MCPStats()
+	if err == nil {
+		m.MCPStats = mcpStats
+	}
 
 	return m, nil
 }
