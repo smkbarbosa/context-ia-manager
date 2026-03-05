@@ -127,6 +127,89 @@ Quando o VSCode abre um workspace com `.vscode/mcp.json`, o assistente tem acess
 | `ciam_compress` | Comprime código: mantém assinaturas, remove docstrings |
 | `ciam_context` | Busca + comprime em uma chamada (máxima economia de tokens) |
 | `ciam_django_map` | Retorna mapa estrutural do projeto: apps, models, views, urls |
+| `ciam_adr_search` | Busca em ADRs — entende o **porquê** de decisões arquiteturais |
+| `ciam_prd_search` | Busca em PRDs — requisitos e critérios de aceite de uma feature |
+| `ciam_plan_search` | Busca em planos de implementação |
+| `ciam_research_search` | Busca em documentos de pesquisa (`docs/research/`) |
+| `ciam_decision_context` | **Tudo em uma chamada**: código + ADR + PRD + plans para um query. Use antes de implementar qualquer coisa. |
+
+---
+
+## Knowledge management — ADR, PRD e planos
+
+Além do código, projetos reais têm duas camadas de contexto que a IA precisa conhecer:
+
+- **ADR** (Architecture Decision Record): *"por que usamos UUID como PK?"*, *"por que DRF e não FastAPI?"*
+- **PRD** (Product Requirements Document): *"o que esse endpoint precisa fazer?"*, *"quais são os critérios de aceite?"*
+
+Sem isso, a IA responde ao *como* mas não conhece o *porquê*. O `ciam` resolve isso com um diretório `docs/` versionado no projeto.
+
+### Fluxo — feature nova
+
+```bash
+# 1. Documente o PORQUÊ antes de qualquer código
+ciam prd new "Sistema de billing via Stripe"
+# → cria docs/prd/PRD-001-sistema-de-billing-via-stripe.md
+# Edite o arquivo: preencha problema, objetivo e critérios de aceite
+
+# 2. Crie um plano de implementação por fases
+ciam plan new "Integração Stripe" --prd PRD-001
+# → cria docs/plans/Plan-001-integracao-stripe.md
+# Edite: defina fases, critérios de sucesso e pontos de pausa
+
+# 3. Implemente (o assistente já tem contexto completo via MCP)
+
+# 4. Indexe os docs para o assistente consultar no futuro
+ciam index . --include-docs
+```
+
+### Fluxo — bug relevante
+
+```bash
+# 1. Antes de tocar no código, documente a causa-raiz
+ciam adr new "Fix: race condition no worker de emails"
+# → cria docs/adr/ADR-001-fix-race-condition-no-worker-de-emails.md
+# Edite: contexto, decisão e consequências
+
+# 2. Faça o fix
+
+# 3. Indexe para que o assistente não cometa o mesmo erro
+ciam index . --include-docs
+```
+
+### Comandos ADR
+
+```bash
+ciam adr new "<título>"               # Cria ADR-NNN.md com template MADR
+ciam adr list                          # Lista todos com status
+ciam adr supersede 3 "<novo título>"  # Marca ADR-003 como superseded e cria substituto
+```
+
+### Comandos PRD
+
+```bash
+ciam prd new "<título>"   # Cria PRD-NNN.md com template estruturado
+ciam prd list             # Lista todos com status
+```
+
+### Comandos Plan
+
+```bash
+ciam plan new "<título>" [--prd PRD-001]  # Cria Plan-NNN.md com fases e checkpoints
+ciam plan list                             # Lista todos com status
+```
+
+### Estrutura `docs/` gerada
+
+```
+docs/
+├── adr/        ← architectural decision records (obrigatório em bugs relevantes)
+├── prd/        ← product requirements documents (obrigatório antes de features)
+├── plans/      ← planos de implementação por fases
+└── research/   ← pesquisas e docs externos ingeridos
+```
+
+Todos os arquivos são Markdown, versionados com git, e ficam pesquisáveis via `ciam_decision_context` no assistente MCP.
 
 ---
 
@@ -168,12 +251,22 @@ Isso permite filtros precisos: `ciam search "autenticação" --type view` retorn
 ```bash
 ciam up              # Sobe Ollama + API (docker compose up -d)
 ciam index [path]    # Indexa um projeto
+ciam index . --include-docs  # Indexa código + docs/ (ADR, PRD, plans, research)
 ciam search <query>  # Busca no projeto indexado
 ciam remember <text> # Salva na memória persistente
 ciam recall <query>  # Busca na memória
 ciam status          # Mostra métricas (chunks, memórias, tokens economizados)
 ciam mcp             # Inicia o servidor MCP em modo stdio (chamado pelo VSCode)
 ciam init            # Gera .vscode/mcp.json no diretório atual
+
+# Knowledge management
+ciam adr new "<título>"                # Novo ADR (MADR template)
+ciam adr list                           # Lista ADRs
+ciam adr supersede <N> "<novo título>" # Supersede ADR-N
+ciam prd new "<título>"                # Novo PRD
+ciam prd list                           # Lista PRDs
+ciam plan new "<título>" [--prd PRD-001]  # Novo plano
+ciam plan list                          # Lista planos
 ```
 
 ```bash
@@ -193,17 +286,20 @@ make down            # docker compose down
 context-ia-manager/
 ├── cmd/
 │   ├── ciam/               # Entry point da CLI
-│   │   └── commands/       # Subcomandos cobra
+│   │   └── commands/       # Subcomandos cobra (index, search, adr, prd, plan...)
 │   └── server/             # Entry point da REST API
 ├── internal/
 │   ├── api/                # REST API + cliente HTTP
+│   ├── cache/              # Cache L1 (in-memory) + L2 (SQLite)
 │   ├── config/             # Configuração via env vars
+│   ├── docs/               # Gerenciamento de ADR/PRD/plans + templates embed
 │   ├── embeddings/         # Cliente Ollama (embed + batch paralelo)
 │   ├── indexer/
 │   │   ├── indexer.go      # Indexer genérico + detecção de tipo
-│   │   └── django/         # Indexer Django-aware
+│   │   ├── django/         # Indexer Django-aware
+│   │   └── docs/           # Indexer de docs/ (chunk_type: adr|prd|plan|research)
 │   ├── memory/             # Memória persistente entre sessões
-│   ├── mcp/                # Servidor MCP stdio
+│   ├── mcp/                # Servidor MCP stdio (12 ferramentas)
 │   ├── search/             # Busca híbrida BM25 + RRF + compressão
 │   └── storage/            # SQLite (chunks + memórias + métricas)
 ├── docker-compose.yml
