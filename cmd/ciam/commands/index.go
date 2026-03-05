@@ -9,11 +9,13 @@ import (
 	"github.com/smkbarbosa/context-ia-manager/internal/config"
 	"github.com/smkbarbosa/context-ia-manager/internal/indexer"
 	djangoIndexer "github.com/smkbarbosa/context-ia-manager/internal/indexer/django"
+	docsIndexer "github.com/smkbarbosa/context-ia-manager/internal/indexer/docs"
 	"github.com/spf13/cobra"
 )
 
 var (
-	indexType string
+	indexType   string
+	includeDocs bool
 )
 
 var indexCmd = &cobra.Command{
@@ -83,6 +85,26 @@ var indexCmd = &cobra.Command{
 			return nil
 		}
 
+		// If --include-docs is set, also index docs/ directory.
+		if includeDocs {
+			dIdx := docsIndexer.New(absPath, projectID)
+			dChunks, err := dIdx.Index()
+			if err != nil {
+				fmt.Printf("Warning: docs indexing failed: %v\n", err)
+			} else if len(dChunks) > 0 {
+				fmt.Printf("Found %d doc chunks (ADR/PRD/plan/research)\n", len(dChunks))
+				for _, c := range dChunks {
+					storageChunks = append(storageChunks, struct {
+						FilePath  string
+						ChunkType string
+						Content   string
+					}{c.FilePath, c.ChunkType, c.Content})
+				}
+			} else {
+				fmt.Println("No docs found (docs/adr, docs/prd, docs/plans, docs/research).")
+			}
+		}
+
 		// Convert to API payload
 		payload := make([]api.ChunkPayload, len(storageChunks))
 		for i, c := range storageChunks {
@@ -129,4 +151,6 @@ var indexCmd = &cobra.Command{
 func init() {
 	indexCmd.Flags().StringVarP(&indexType, "type", "t", "",
 		"Project type: django, python, generic (auto-detected if not set)")
+	indexCmd.Flags().BoolVar(&includeDocs, "include-docs", false,
+		"Also index docs/ directory (ADR, PRD, plans, research)")
 }

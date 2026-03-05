@@ -3,12 +3,13 @@
 package mcp
 
 import (
-"context"
-"encoding/json"
-"fmt"
-"path/filepath"
+	"context"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
 
-mcpgo "github.com/mark3labs/mcp-go/mcp"
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 "github.com/mark3labs/mcp-go/server"
 djangoIndexer "github.com/smkbarbosa/context-ia-manager/internal/indexer/django"
 "github.com/smkbarbosa/context-ia-manager/internal/api"
@@ -137,6 +138,85 @@ mcpgo.Description("Absolute path to the Django project root")),
 ),
 s.handleDjangoMap,
 )
+
+	// ── Knowledge management tools (Fase 5) ─────────────────────────────────
+
+	srv.AddTool(
+		mcpgo.NewTool("ciam_adr_search",
+			mcpgo.WithDescription("Search Architecture Decision Records (ADRs). "+
+				"Use to understand WHY past architectural decisions were made before proposing changes."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("What you want to find in ADRs")),
+			mcpgo.WithString("project_path",
+				mcpgo.Description("Project path (defaults to workspace folder)")),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Max results (default 5)")),
+		),
+		s.handleADRSearch,
+	)
+
+	srv.AddTool(
+		mcpgo.NewTool("ciam_prd_search",
+			mcpgo.WithDescription("Search Product Requirement Documents (PRDs). "+
+				"Use to understand WHAT a feature must do and its acceptance criteria."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("What you want to find in PRDs")),
+			mcpgo.WithString("project_path",
+				mcpgo.Description("Project path (defaults to workspace folder)")),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Max results (default 5)")),
+		),
+		s.handlePRDSearch,
+	)
+
+	srv.AddTool(
+		mcpgo.NewTool("ciam_plan_search",
+			mcpgo.WithDescription("Search implementation plans. "+
+				"Use to understand the phased approach and success criteria for a feature."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("What you want to find in plans")),
+			mcpgo.WithString("project_path",
+				mcpgo.Description("Project path (defaults to workspace folder)")),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Max results (default 5)")),
+		),
+		s.handlePlanSearch,
+	)
+
+	srv.AddTool(
+		mcpgo.NewTool("ciam_research_search",
+			mcpgo.WithDescription("Search research documents in docs/research/. "+
+				"Use to find external knowledge that was ingested into this project."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("What you want to find in research docs")),
+			mcpgo.WithString("project_path",
+				mcpgo.Description("Project path (defaults to workspace folder)")),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Max results (default 5)")),
+		),
+		s.handleResearchSearch,
+	)
+
+	srv.AddTool(
+		mcpgo.NewTool("ciam_decision_context",
+			mcpgo.WithDescription("Get full decision context for a query in one call: "+
+				"code chunks + ADRs + PRDs + plans. "+
+				"Use this before implementing anything to ensure alignment with past decisions. "+
+				"Returns code, architecture decisions, requirements, and plans together."),
+			mcpgo.WithString("query",
+				mcpgo.Required(),
+				mcpgo.Description("What you are about to implement or change")),
+			mcpgo.WithString("project_path",
+				mcpgo.Description("Project path (defaults to workspace folder)")),
+			mcpgo.WithNumber("limit",
+				mcpgo.Description("Max results per source (default 3)")),
+		),
+		s.handleDecisionContext,
+	)
 }
 
 func (s *Server) handleIndex(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -243,4 +323,85 @@ func (s *Server) handleDjangoMap(_ context.Context, req mcpgo.CallToolRequest) (
 	}
 	data, _ := json.MarshalIndent(appMap, "", "  ")
 	return mcpgo.NewToolResultText(string(data)), nil
+}
+
+// ── Knowledge management handlers (Fase 5) ──────────────────────────────────
+
+func (s *Server) handleADRSearch(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	return s.docSearch(req, "adr")
+}
+
+func (s *Server) handlePRDSearch(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	return s.docSearch(req, "prd")
+}
+
+func (s *Server) handlePlanSearch(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	return s.docSearch(req, "plan")
+}
+
+func (s *Server) handleResearchSearch(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	return s.docSearch(req, "research")
+}
+
+// docSearch is a shared helper for single-type doc searches.
+func (s *Server) docSearch(req mcpgo.CallToolRequest, chunkType string) (*mcpgo.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
+	}
+	limit := req.GetInt("limit", 5)
+
+	results, err := s.client.Search(query, chunkType, limit, false)
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
+	}
+	if len(results.Chunks) == 0 {
+		return mcpgo.NewToolResultText(fmt.Sprintf(
+			"No %s documents found for: %q\n\nTip: run `ciam index . --include-docs` after creating docs.", chunkType, query,
+		)), nil
+	}
+	data, _ := json.MarshalIndent(results.Chunks, "", "  ")
+	return mcpgo.NewToolResultText(string(data)), nil
+}
+
+// handleDecisionContext combines code + ADR + PRD + plan results for one query.
+func (s *Server) handleDecisionContext(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
+	}
+	limit := req.GetInt("limit", 3)
+
+	type section struct {
+		label     string
+		chunkType string
+	}
+	sections := []section{
+		{"## Code", ""},
+		{"## Architecture Decisions (ADR)", "adr"},
+		{"## Requirements (PRD)", "prd"},
+		{"## Implementation Plans", "plan"},
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Decision context for: %q\n\n", query))
+
+	for _, sec := range sections {
+		results, err := s.client.Search(query, sec.chunkType, limit, true)
+		if err != nil {
+			sb.WriteString(fmt.Sprintf("%s\n_Error: %v_\n\n", sec.label, err))
+			continue
+		}
+		sb.WriteString(sec.label + "\n")
+		if len(results.Chunks) == 0 {
+			sb.WriteString("_No results_\n\n")
+			continue
+		}
+		for _, c := range results.Chunks {
+			sb.WriteString(fmt.Sprintf("**%s** (`%s`, score: %.2f)\n```\n%s\n```\n\n",
+				c.FilePath, c.ChunkType, c.Score, c.Content))
+		}
+	}
+
+	return mcpgo.NewToolResultText(sb.String()), nil
 }

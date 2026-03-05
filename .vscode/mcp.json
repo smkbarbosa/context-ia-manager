@@ -1,8 +1,10 @@
 {
   "servers": {
     "ciam": {
-      "command": "ciam",
-      "args": ["mcp"],
+      "args": [
+        "mcp"
+      ],
+      "command": "/home/samuel/go/bin/ciam",
       "env": {
         "CIAM_API_URL": "http://localhost:8080",
         "CIAM_OLLAMA_URL": "http://localhost:11434",

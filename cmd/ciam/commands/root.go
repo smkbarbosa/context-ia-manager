@@ -30,4 +30,7 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(initConfigCmd)
+	rootCmd.AddCommand(adrCmd)
+	rootCmd.AddCommand(prdCmd)
+	rootCmd.AddCommand(planCmd)
 }
