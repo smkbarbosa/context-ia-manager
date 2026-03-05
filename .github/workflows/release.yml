@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            cc: gcc
+            suffix: ""
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+            suffix: ""
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            cc: gcc
+            suffix: ""
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            cc: gcc
+            suffix: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install cross-compiler (Linux ARM64)
+        if: matrix.goarch == 'arm64' && matrix.goos == 'linux'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Install gcc (Linux AMD64)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: sudo apt-get install -y gcc libc6-dev
+
+      - name: Build CLI
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"
+          CC: ${{ matrix.cc }}
+        run: |
+          mkdir -p dist
+          go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o dist/ciam-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }} \
+            ./cmd/ciam
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciam-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/ciam-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+
+  publish:
+    name: Publish GitHub Release
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum ciam-* > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ciam-*
+            dist/checksums.txt
+          generate_release_notes: true
+          draft: false

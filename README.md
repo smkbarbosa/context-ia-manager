@@ -215,6 +215,30 @@ context-ia-manager/
 
 ---
 
+## Releases
+
+Os binários são gerados automaticamente pelo GitHub Actions a cada tag `v*.*.*`.
+
+Para publicar uma nova versão:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+O pipeline constrói `ciam` para:
+
+| Plataforma | Arch |
+|---|---|
+| Linux | amd64 |
+| Linux | arm64 |
+| macOS | amd64 (Intel) |
+| macOS | arm64 (Apple Silicon) |
+
+Os binários e o `checksums.txt` ficam disponíveis na página de [Releases](../../releases) do repositório.
+
+---
+
 ## Licença
 
 MIT
