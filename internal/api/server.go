@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	djangoIndexer "github.com/smkbarbosa/context-ia-manager/internal/indexer/django"
+	"github.com/smkbarbosa/context-ia-manager/internal/cache"
 	"github.com/smkbarbosa/context-ia-manager/internal/config"
 	"github.com/smkbarbosa/context-ia-manager/internal/embeddings"
 	"github.com/smkbarbosa/context-ia-manager/internal/indexer"
@@ -19,10 +21,11 @@ import (
 
 // Server is the ciam REST API.
 type Server struct {
-	cfg      *config.Config
-	db       *storage.DB
-	embedder *embeddings.Client
-	memory   *memory.Service
+	cfg         *config.Config
+	db          *storage.DB
+	embedder    *embeddings.Client
+	memory      *memory.Service
+	searchCache *cache.SearchCache
 }
 
 // NewServer initialises the server and its dependencies.
@@ -35,11 +38,20 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	emb := embeddings.New(cfg.OllamaURL, cfg.OllamaModel)
 	mem := memory.New(db, emb)
 
+	// L2 cache usa a mesma pasta do banco principal, arquivo separado.
+	cacheDBPath := cfg.DBPath[:len(cfg.DBPath)-len(".db")] + "-search-cache.db"
+	sc, err := cache.NewSearchCache(500, 30*time.Minute, cacheDBPath)
+	if err != nil {
+		log.Printf("[cache] falha ao inicializar L2 (%v); usando apenas L1", err)
+		sc, _ = cache.NewSearchCache(500, 30*time.Minute, "")
+	}
+
 	return &Server{
-		cfg:      cfg,
-		db:       db,
-		embedder: emb,
-		memory:   mem,
+		cfg:         cfg,
+		db:          db,
+		embedder:    emb,
+		memory:      mem,
+		searchCache: sc,
 	}, nil
 }
 
@@ -214,6 +226,9 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[index] progress %d/%d chunks stored", indexed, total)
 	}
 
+	// Invalida cache de busca do projeto — novo índice pode mudar resultados.
+	s.searchCache.InvalidateProject(req.ProjectID)
+
 	// Count unique files from the original request.
 	seen := make(map[string]struct{}, total)
 	for _, c := range req.Chunks {
@@ -230,11 +245,11 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Query       string `json:"query"`
-		ProjectID   string `json:"project_id"`
-		ChunkType   string `json:"chunk_type"`
-		Limit       int    `json:"limit"`
-		Compress    bool   `json:"compress"`
+		Query     string `json:"query"`
+		ProjectID string `json:"project_id"`
+		ChunkType string `json:"chunk_type"`
+		Limit     int    `json:"limit"`
+		Compress  bool   `json:"compress"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -242,6 +257,28 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Limit == 0 {
 		req.Limit = 5
+	}
+
+	type chunkOut struct {
+		FilePath  string  `json:"file_path"`
+		ChunkType string  `json:"chunk_type"`
+		Content   string  `json:"content"`
+		Score     float32 `json:"score"`
+	}
+
+	// L1/L2: verifica cache de busca antes de chamar Ollama + SQLite.
+	cacheKey := cache.SearchKey(req.ProjectID, req.Query, req.ChunkType, req.Limit)
+	if cached, ok := s.searchCache.Get(cacheKey); ok {
+		out := make([]chunkOut, len(cached))
+		for i, c := range cached {
+			content := c.Content
+			if req.Compress {
+				content = search.Compress(content)
+			}
+			out[i] = chunkOut{FilePath: c.FilePath, ChunkType: c.ChunkType, Content: content, Score: c.Score}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"chunks": out, "cached": true})
+		return
 	}
 
 	vec, err := s.embedder.Embed(req.Query)
@@ -261,12 +298,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		results = results[:req.Limit]
 	}
 
-	type chunkOut struct {
-		FilePath  string  `json:"file_path"`
-		ChunkType string  `json:"chunk_type"`
-		Content   string  `json:"content"`
-		Score     float32 `json:"score"`
+	// Armazena no cache para próximas chamadas idênticas.
+	cacheable := make([]cache.SearchResult, len(results))
+	for i, r := range results {
+		cacheable[i] = cache.SearchResult{
+			FilePath: r.FilePath, ChunkType: r.ChunkType,
+			Content: r.Content, Score: r.RRFScore,
+		}
 	}
+	s.searchCache.Set(cacheKey, cacheable)
 
 	out := make([]chunkOut, len(results))
 	for i, r := range results {
@@ -351,6 +391,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Agrega hits dos dois caches.
+	metrics.CacheHits = int(s.embedder.EmbedCacheHits()) + int(s.searchCache.Hits())
 	writeJSON(w, http.StatusOK, metrics)
 }
 

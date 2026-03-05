@@ -6,14 +6,23 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/smkbarbosa/context-ia-manager/internal/cache"
 )
 
 // Client calls the Ollama API to generate text embeddings.
 type Client struct {
-	baseURL string
-	model   string
-	http    *http.Client
+	baseURL    string
+	model      string
+	http       *http.Client
+	embedCache *cache.EmbedCache
 }
+
+// EmbedCacheLen retorna o número de entradas no cache de embeddings (útil para métricas).
+func (c *Client) EmbedCacheLen() int { return c.embedCache.Len() }
+
+// EmbedCacheHits retorna o total de cache hits acumulados.
+func (c *Client) EmbedCacheHits() int64 { return c.embedCache.Hits() }
 
 // embedRequest uses the current Ollama /api/embed endpoint.
 // Input accepts a single string or a slice of strings.
@@ -33,14 +42,20 @@ type embedResponse struct {
 // New creates a new Ollama embeddings client.
 func New(ollamaURL, model string) *Client {
 	return &Client{
-		baseURL: ollamaURL,
-		model:   model,
-		http:    &http.Client{Timeout: 5 * time.Minute},
+		baseURL:    ollamaURL,
+		model:      model,
+		http:       &http.Client{Timeout: 5 * time.Minute},
+		embedCache: cache.NewEmbedCache(2000),
 	}
 }
 
 // Embed returns a vector embedding for the given text.
 func (c *Client) Embed(text string) ([]float32, error) {
+	// L1: verifica cache antes de chamar o Ollama.
+	if vec, ok := c.embedCache.Get(text); ok {
+		return vec, nil
+	}
+
 	body, err := json.Marshal(embedRequest{Model: c.model, Input: text, Truncate: true})
 	if err != nil {
 		return nil, err
@@ -64,7 +79,9 @@ func (c *Client) Embed(text string) ([]float32, error) {
 	if len(er.Embeddings) == 0 {
 		return nil, fmt.Errorf("ollama returned empty embeddings")
 	}
-	return er.Embeddings[0], nil
+	vec := er.Embeddings[0]
+	c.embedCache.Set(text, vec)
+	return vec, nil
 }
 
 // EmbedBatch generates embeddings for all texts in a single Ollama call.
