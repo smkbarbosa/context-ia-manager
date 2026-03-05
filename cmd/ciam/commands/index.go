@@ -93,17 +93,35 @@ var indexCmd = &cobra.Command{
 			}
 		}
 
-		fmt.Printf("Sending %d chunks to API for embedding...\n", len(payload))
 		cfg := config.Load()
 		client := api.NewClient(cfg.APIURL)
 
-		result, err := client.IndexChunks(projectID, indexType, payload)
-		if err != nil {
-			return fmt.Errorf("embedding/storage failed: %w", err)
+		total := len(payload)
+		const batchSize = 50
+		batches := (total + batchSize - 1) / batchSize
+
+		fmt.Printf("Embedding %d chunks in %d batches (batch size=%d)...\n", total, batches, batchSize)
+
+		var totalIndexed, totalFiles int
+		for b := 0; b < batches; b++ {
+			start := b * batchSize
+			end := start + batchSize
+			if end > total {
+				end = total
+			}
+			fmt.Printf("  [%d/%d] chunks %d–%d... ", b+1, batches, start+1, end)
+
+			result, err := client.IndexChunks(projectID, indexType, payload[start:end])
+			if err != nil {
+				fmt.Println("FAILED")
+				return fmt.Errorf("batch %d failed: %w", b+1, err)
+			}
+			totalIndexed += result.ChunksIndexed
+			totalFiles += result.FilesProcessed
+			fmt.Printf("OK (%d indexed)\n", result.ChunksIndexed)
 		}
 
-		fmt.Printf("Done. Indexed %d chunks from %d files.\n",
-			result.ChunksIndexed, result.FilesProcessed)
+		fmt.Printf("\nDone. Indexed %d chunks from %d files.\n", totalIndexed, totalFiles)
 		return nil
 	},
 }

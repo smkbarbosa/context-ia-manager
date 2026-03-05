@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -153,37 +154,57 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chunks := make([]storage.Chunk, len(req.Chunks))
-	texts := make([]string, len(req.Chunks))
-	for i, c := range req.Chunks {
-		chunks[i] = storage.Chunk{
-			ProjectID: req.ProjectID,
-			FilePath:  c.FilePath,
-			ChunkType: c.ChunkType,
-			Content:   c.Content,
+	const batchSize = 20
+	total := len(req.Chunks)
+	log.Printf("[index] project=%s total_chunks=%d batch_size=%d", req.ProjectID, total, batchSize)
+
+	var indexed int
+	for start := 0; start < total; start += batchSize {
+		end := start + batchSize
+		if end > total {
+			end = total
 		}
-		texts[i] = c.Content
+		window := req.Chunks[start:end]
+
+		texts := make([]string, len(window))
+		chunks := make([]storage.Chunk, len(window))
+		for i, c := range window {
+			texts[i] = c.Content
+			chunks[i] = storage.Chunk{
+				ProjectID: req.ProjectID,
+				FilePath:  c.FilePath,
+				ChunkType: c.ChunkType,
+				Content:   c.Content,
+			}
+		}
+
+		vectors, err := s.embedder.EmbedBatch(texts)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
+			return
+		}
+		for i := range chunks {
+			chunks[i].Embedding = vectors[i]
+		}
+		if err := s.db.UpsertChunks(req.ProjectID, chunks); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		indexed += len(chunks)
+		log.Printf("[index] progress %d/%d chunks stored", indexed, total)
 	}
 
-	vectors, err := s.embedder.EmbedBatch(texts)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
-		return
-	}
-	for i := range chunks {
-		chunks[i].Embedding = vectors[i]
-	}
-
-	if err := s.db.UpsertChunks(req.ProjectID, chunks); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	// Count unique files from the original request.
+	seen := make(map[string]struct{}, total)
+	for _, c := range req.Chunks {
+		seen[c.FilePath] = struct{}{}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"project_id":      req.ProjectID,
 		"project_type":    req.ProjectType,
-		"chunks_indexed":  len(chunks),
-		"files_processed": countFiles(chunks),
+		"chunks_indexed":  indexed,
+		"files_processed": len(seen),
 	})
 }
 
