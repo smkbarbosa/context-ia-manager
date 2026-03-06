@@ -552,7 +552,35 @@ func (s *Server) handleStatusPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Render HTML.
-	tmpl, err := template.New("status").Parse(statusHTMLTmpl)
+	funcMap := template.FuncMap{
+		// pct returns integer percentage of part relative to total (0-100).
+		"pct": func(part, total int64) int64 {
+			if total == 0 {
+				return 0
+			}
+			v := part * 100 / total
+			if v > 100 {
+				return 100
+			}
+			return v
+		},
+		// slice returns s[start:end], safe against out-of-range.
+		"slice": func(s string, start, end int) string {
+			if start < 0 {
+				start = 0
+			}
+			if end > len(s) {
+				end = len(s)
+			}
+			if start >= end {
+				return s
+			}
+			return s[start:end]
+		},
+		// mul is needed for intermediate calculations inside templates.
+		"mul": func(a int64, b int) int64 { return a * int64(b) },
+	}
+	tmpl, err := template.New("status").Funcs(funcMap).Parse(statusHTMLTmpl)
 	if err != nil {
 		http.Error(w, "template error: "+err.Error(), http.StatusInternalServerError)
 		return

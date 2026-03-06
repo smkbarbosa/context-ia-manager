@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/smkbarbosa/context-ia-manager/internal/api"
@@ -30,7 +31,7 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("  Memories:       %d\n", status.MemoriesStored)
 		fmt.Printf("  Cache hits:     %d\n", status.CacheHits)
 
-		// Token savings block — only shown once the API has served at least one search.
+		// Token savings block.
 		fmt.Println()
 		fmt.Println("  Token savings:")
 		fmt.Printf("    Project size (est.):  ~%d tokens\n", status.TotalProjectTokens)
@@ -42,6 +43,40 @@ var statusCmd = &cobra.Command{
 			fmt.Printf("    Reduction:            run a search to start tracking\n")
 		}
 		fmt.Printf("    Estimated saved:      ~%d tokens total\n", status.EstimatedTokensSaved)
+
+		// Per-project breakdown.
+		if len(status.Projects) > 0 {
+			fmt.Println()
+			fmt.Println("  Projects:")
+			fmt.Printf("  %-24s  %7s  %7s  %10s  %-26s  %s\n",
+				"PROJECT", "CHUNKS", "FILES", "~TOKENS", "LAST INDEXED", "TYPES")
+			fmt.Printf("  %s\n", strings.Repeat("-", 100))
+			for _, p := range status.Projects {
+				// Sort and join type counts: model:12 view:8 …
+				keys := make([]string, 0, len(p.ChunkTypes))
+				for k := range p.ChunkTypes {
+					keys = append(keys, k)
+				}
+				sort.Strings(keys)
+				parts := make([]string, 0, len(keys))
+				for _, k := range keys {
+					parts = append(parts, fmt.Sprintf("%s:%d", k, p.ChunkTypes[k]))
+				}
+				types := strings.Join(parts, " ")
+				if len(types) > 40 {
+					types = types[:37] + "..."
+				}
+
+				// Trim last_indexed to date+time without seconds.
+				indexedAt := p.LastIndexed
+				if len(indexedAt) > 16 {
+					indexedAt = indexedAt[:16]
+				}
+
+				fmt.Printf("  %-24s  %7d  %7d  %10d  %-26s  %s\n",
+					p.ProjectID, p.TotalChunks, p.TotalFiles, p.TokenEstimate, indexedAt, types)
+			}
+		}
 
 		if len(status.MCPStats) > 0 {
 			fmt.Println()

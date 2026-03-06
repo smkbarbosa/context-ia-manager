@@ -37,16 +37,28 @@ type Memory struct {
 	CreatedAt string
 }
 
+// ProjectMetric holds per-project aggregated stats.
+type ProjectMetric struct {
+	ProjectID      string         `json:"project_id"`
+	TotalChunks    int            `json:"total_chunks"`
+	TotalFiles     int            `json:"total_files"`
+	TokenEstimate  int64          `json:"token_estimate"`
+	LastIndexed    string         `json:"last_indexed"`
+	ChunkTypes     map[string]int `json:"chunk_types"`
+	Searches       int64          `json:"searches,omitempty"`
+}
+
 // StatusMetrics are aggregated stats returned by /status.
 type StatusMetrics struct {
-	ProjectsIndexed      int           `json:"projects_indexed"`
-	TotalChunks          int           `json:"total_chunks"`
-	MemoriesStored       int           `json:"memories_stored"`
-	CacheHits            int           `json:"cache_hits"`
-	EstimatedTokensSaved int           `json:"estimated_tokens_saved"`
-	TokensServedViaSearch int64         `json:"tokens_served_via_search"`
-	TotalProjectTokens   int64         `json:"total_project_tokens"`
-	MCPStats             []MCPToolStat `json:"mcp_tools,omitempty"`
+	ProjectsIndexed       int             `json:"projects_indexed"`
+	TotalChunks           int             `json:"total_chunks"`
+	MemoriesStored        int             `json:"memories_stored"`
+	CacheHits             int             `json:"cache_hits"`
+	EstimatedTokensSaved  int             `json:"estimated_tokens_saved"`
+	TokensServedViaSearch int64           `json:"tokens_served_via_search"`
+	TotalProjectTokens    int64           `json:"total_project_tokens"`
+	Projects              []ProjectMetric `json:"projects,omitempty"`
+	MCPStats              []MCPToolStat   `json:"mcp_tools,omitempty"`
 }
 
 // DB wraps a SQLite connection with ciam-specific helpers.
@@ -438,7 +450,66 @@ func (db *DB) Metrics() (*StatusMetrics, error) {
 		m.MCPStats = mcpStats
 	}
 
+	projects, err := db.ProjectMetrics()
+	if err == nil {
+		m.Projects = projects
+	}
+
 	return m, nil
+}
+
+// ProjectMetrics returns per-project stats sorted by last indexed desc.
+func (db *DB) ProjectMetrics() ([]ProjectMetric, error) {
+	// Aggregate totals per project.
+	rows, err := db.conn.Query(`
+		SELECT
+			project_id,
+			COUNT(*)                        AS total_chunks,
+			COUNT(DISTINCT file_path)       AS total_files,
+			COALESCE(SUM(LENGTH(content)),0) / 4 AS token_estimate,
+			COALESCE(MAX(created_at), '')   AS last_indexed
+		FROM chunks
+		GROUP BY project_id
+		ORDER BY last_indexed DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []ProjectMetric
+	for rows.Next() {
+		var p ProjectMetric
+		if err := rows.Scan(&p.ProjectID, &p.TotalChunks, &p.TotalFiles, &p.TokenEstimate, &p.LastIndexed); err != nil {
+			return nil, err
+		}
+		p.ChunkTypes = map[string]int{}
+		projects = append(projects, p)
+	}
+	rows.Close() //nolint:errcheck
+
+	// Fetch chunk_type breakdown per project separately (simpler loop).
+	for i, p := range projects {
+		tRows, err := db.conn.Query(`
+			SELECT chunk_type, COUNT(*) FROM chunks
+			WHERE project_id = ?
+			GROUP BY chunk_type
+			ORDER BY chunk_type
+		`, p.ProjectID)
+		if err != nil {
+			continue
+		}
+		for tRows.Next() {
+			var ct string
+			var cnt int
+			if tRows.Scan(&ct, &cnt) == nil {
+				projects[i].ChunkTypes[ct] = cnt
+			}
+		}
+		tRows.Close() //nolint:errcheck
+	}
+
+	return projects, nil
 }
 
 // cosine computes cosine similarity between two vectors.

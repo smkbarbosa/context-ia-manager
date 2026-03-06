@@ -51,16 +51,27 @@ type MCPToolStat struct {
 	TopQueries   []string `json:"top_queries,omitempty"`
 }
 
+// ProjectMetric mirrors storage.ProjectMetric for the CLI layer.
+type ProjectMetric struct {
+	ProjectID     string         `json:"project_id"`
+	TotalChunks   int            `json:"total_chunks"`
+	TotalFiles    int            `json:"total_files"`
+	TokenEstimate int64          `json:"token_estimate"`
+	LastIndexed   string         `json:"last_indexed"`
+	ChunkTypes    map[string]int `json:"chunk_types"`
+}
+
 // StatusResponse contains service metrics.
 type StatusResponse struct {
-	ProjectsIndexed       int           `json:"projects_indexed"`
-	TotalChunks           int           `json:"total_chunks"`
-	MemoriesStored        int           `json:"memories_stored"`
-	CacheHits             int           `json:"cache_hits"`
-	EstimatedTokensSaved  int           `json:"estimated_tokens_saved"`
-	TokensServedViaSearch int64         `json:"tokens_served_via_search"`
-	TotalProjectTokens    int64         `json:"total_project_tokens"`
-	MCPStats              []MCPToolStat `json:"mcp_tools,omitempty"`
+	ProjectsIndexed       int             `json:"projects_indexed"`
+	TotalChunks           int             `json:"total_chunks"`
+	MemoriesStored        int             `json:"memories_stored"`
+	CacheHits             int             `json:"cache_hits"`
+	EstimatedTokensSaved  int             `json:"estimated_tokens_saved"`
+	TokensServedViaSearch int64           `json:"tokens_served_via_search"`
+	TotalProjectTokens    int64           `json:"total_project_tokens"`
+	Projects              []ProjectMetric `json:"projects,omitempty"`
+	MCPStats              []MCPToolStat   `json:"mcp_tools,omitempty"`
 }
 
 // Index sends an index request to the API.

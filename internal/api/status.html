@@ -35,6 +35,8 @@
     .badge-blue { background: #1f3a5f; color: #58a6ff; }
     .badge-red  { background: #3d1f1f; color: #f85149; }
     .tag { display: inline-block; background: #21262d; color: #8b949e; border-radius: 4px; padding: 0.05rem 0.35rem; font-size: 0.72rem; margin: 0.1rem; }
+    .bar-wrap { background:#21262d; border-radius:4px; height:8px; overflow:hidden; min-width:80px; display:inline-block; vertical-align:middle; }
+    .bar-fill  { height:100%; background:#3fb950; border-radius:4px; }
     .no-data { color: #8b949e; font-style: italic; font-size: 0.85rem; padding: 1rem 0; }
     .footer { color: #484f58; font-size: 0.75rem; margin-top: 1rem; }
     .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #3fb950; margin-right: 0.4rem; animation: pulse 2s infinite; }
@@ -67,10 +69,58 @@
       <div class="card-value yellow">{{.Metrics.EstimatedTokensSaved}}</div>
     </div>
     <div class="card">
+      <div class="card-label">Tokens servidos (busca)</div>
+      <div class="card-value">{{.Metrics.TokensServedViaSearch}}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Tamanho do projeto ~</div>
+      <div class="card-value">{{.Metrics.TotalProjectTokens}}</div>
+    </div>
+    <div class="card">
       <div class="card-label">Chamadas MCP totais</div>
       <div class="card-value">{{.TotalMCPCalls}}</div>
     </div>
   </div>
+
+  <h2>Projetos indexados</h2>
+  {{if .Metrics.Projects}}
+  <table>
+    <thead>
+      <tr>
+        <th>Projeto</th>
+        <th>Chunks</th>
+        <th>Arquivos</th>
+        <th>~Tokens</th>
+        <th style="min-width:120px">Token usage</th>
+        <th>Tipos de chunk</th>
+        <th>Último índice</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Metrics.Projects}}
+      <tr>
+        <td><strong style="color:#c9d1d9">{{.ProjectID}}</strong></td>
+        <td>{{.TotalChunks}}</td>
+        <td>{{.TotalFiles}}</td>
+        <td>{{.TokenEstimate}}</td>
+        <td>
+          {{if and (gt $.Metrics.TotalProjectTokens 0) (gt .TokenEstimate 0)}}
+            {{$pct := mul .TokenEstimate 100}}
+            <div class="bar-wrap"><div class="bar-fill" style="width:{{pct .TokenEstimate $.Metrics.TotalProjectTokens}}%"></div></div>
+            <span style="font-size:0.75rem;color:#8b949e;margin-left:0.4rem">{{pct .TokenEstimate $.Metrics.TotalProjectTokens}}%</span>
+          {{else}}—{{end}}
+        </td>
+        <td>
+          {{range $k,$v := .ChunkTypes}}<span class="tag">{{$k}}:{{$v}}</span>{{end}}
+        </td>
+        <td style="color:#8b949e;font-size:0.75rem">{{slice .LastIndexed 0 16}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="no-data">Nenhum projeto indexado. Execute <code>ciam index .</code> em um projeto.</p>
+  {{end}}
 
   <h2>Ferramentas MCP</h2>
   {{if .Metrics.MCPStats}}
