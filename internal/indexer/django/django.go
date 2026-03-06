@@ -205,6 +205,12 @@ func inferType(filename, content string) string {
 	return "generic"
 }
 
+// InferType is the exported version of inferType for use by external packages
+// (e.g. the watch command) that need Django-aware chunk type detection.
+func InferType(filename, content string) string {
+	return inferType(filename, content)
+}
+
 // firstN returns the first n bytes of s.
 func firstN(s string, n int) string {
 	if len(s) <= n {

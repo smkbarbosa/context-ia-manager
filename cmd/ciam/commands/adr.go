@@ -46,6 +46,7 @@ Example:
 		fmt.Printf("✓ Created %s\n", rel)
 		fmt.Printf("  Edit: %s\n", path)
 		fmt.Printf("\nDocument the root cause and decision BEFORE writing code.\n")
+		autoIndexDoc(projectPath, path, "adr")
 		return nil
 	},
 }

@@ -46,6 +46,7 @@ Example:
 		fmt.Printf("  Edit: %s\n", path)
 		fmt.Printf("\nFill in the problem, objective, and acceptance criteria BEFORE implementation.\n")
 		fmt.Printf("Next: ciam plan new \"%s\" --prd PRD-...\n", title)
+		autoIndexDoc(projectPath, path, "prd")
 		return nil
 	},
 }

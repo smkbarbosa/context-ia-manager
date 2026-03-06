@@ -50,6 +50,7 @@ Example:
 			fmt.Printf("  Linked to: %s\n", planPRDRef)
 		}
 		fmt.Printf("\nFill in the phases and success criteria, then share with the AI to implement.\n")
+		autoIndexDoc(projectPath, path, "plan")
 		return nil
 	},
 }

@@ -67,6 +67,7 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/project/index", s.handleIndex)
 	mux.HandleFunc("POST /api/v1/project/chunks", s.handleChunks)
+	mux.HandleFunc("POST /api/v1/project/file", s.handleFileIndex)
 	mux.HandleFunc("POST /api/v1/search", s.handleSearch)
 	mux.HandleFunc("POST /api/v1/memory/store", s.handleRemember)
 	mux.HandleFunc("POST /api/v1/memory/recall", s.handleRecall)
@@ -257,6 +258,79 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleFileIndex indexes a single file incrementally.
+// The client sends a pre-computed SHA-256 hash; if it matches what is stored,
+// the request is acknowledged without re-embedding (saving GPU time).
+func (s *Server) handleFileIndex(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProjectID string `json:"project_id"`
+		FileHash  string `json:"file_hash"`
+		Chunks    []struct {
+			FilePath  string `json:"file_path"`
+			ChunkType string `json:"chunk_type"`
+			Content   string `json:"content"`
+		} `json:"chunks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Chunks) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"updated": false, "chunks_indexed": 0})
+		return
+	}
+
+	filePath := req.Chunks[0].FilePath
+
+	// Check hash — skip embedding if content unchanged.
+	if req.FileHash != "" && s.db.GetFileHash(req.ProjectID, filePath) == req.FileHash {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"project_id":    req.ProjectID,
+			"file_path":     filePath,
+			"updated":       false,
+			"chunks_indexed": 0,
+		})
+		return
+	}
+
+	texts := make([]string, len(req.Chunks))
+	chunks := make([]storage.Chunk, len(req.Chunks))
+	for i, c := range req.Chunks {
+		texts[i] = c.Content
+		chunks[i] = storage.Chunk{
+			ProjectID: req.ProjectID,
+			FilePath:  c.FilePath,
+			ChunkType: c.ChunkType,
+			Content:   c.Content,
+		}
+	}
+
+	vectors, err := s.embedder.EmbedBatch(texts)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "embedding failed: "+err.Error())
+		return
+	}
+	for i := range chunks {
+		chunks[i].Embedding = vectors[i]
+	}
+
+	updated, err := s.db.UpsertFileChunks(req.ProjectID, filePath, req.FileHash, chunks)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Invalidate search cache for this project.
+	s.searchCache.InvalidateProject(req.ProjectID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"project_id":     req.ProjectID,
+		"file_path":      filePath,
+		"updated":        updated,
+		"chunks_indexed": len(chunks),
+	})
+}
+
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Query     string `json:"query"`
@@ -310,6 +384,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	results := search.Hybrid(req.Query, raw)
 	if len(results) > req.Limit {
 		results = results[:req.Limit]
+	}
+
+	// Track tokens served: approx 1 token per 4 chars of content returned.
+	var tokensServed int64
+	for _, r := range results {
+		tokensServed += int64(len(r.Content)) / 4
+	}
+	if tokensServed > 0 {
+		s.db.IncrMetric("tokens_served_via_search", tokensServed)
 	}
 
 	// Armazena no cache para próximas chamadas idênticas.

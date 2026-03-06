@@ -53,12 +53,14 @@ type MCPToolStat struct {
 
 // StatusResponse contains service metrics.
 type StatusResponse struct {
-	ProjectsIndexed      int           `json:"projects_indexed"`
-	TotalChunks          int           `json:"total_chunks"`
-	MemoriesStored       int           `json:"memories_stored"`
-	CacheHits            int           `json:"cache_hits"`
-	EstimatedTokensSaved int           `json:"estimated_tokens_saved"`
-	MCPStats             []MCPToolStat `json:"mcp_tools,omitempty"`
+	ProjectsIndexed       int           `json:"projects_indexed"`
+	TotalChunks           int           `json:"total_chunks"`
+	MemoriesStored        int           `json:"memories_stored"`
+	CacheHits             int           `json:"cache_hits"`
+	EstimatedTokensSaved  int           `json:"estimated_tokens_saved"`
+	TokensServedViaSearch int64         `json:"tokens_served_via_search"`
+	TotalProjectTokens    int64         `json:"total_project_tokens"`
+	MCPStats              []MCPToolStat `json:"mcp_tools,omitempty"`
 }
 
 // Index sends an index request to the API.
@@ -87,6 +89,27 @@ func (c *Client) IndexChunks(projectID, projectType string, chunks []ChunkPayloa
 		"project_id":   projectID,
 		"project_type": projectType,
 		"chunks":       chunks,
+	}, &result)
+	return &result, err
+}
+
+// FileIndexResponse is the result of a per-file incremental index.
+type FileIndexResponse struct {
+	ProjectID     string `json:"project_id"`
+	FilePath      string `json:"file_path"`
+	Updated       bool   `json:"updated"`
+	ChunksIndexed int    `json:"chunks_indexed"`
+}
+
+// IndexFile sends a single file's chunks for incremental indexing.
+// fileHash is the SHA-256 hex of the file content; the server skips
+// embedding if the hash matches the stored one.
+func (c *Client) IndexFile(projectID, fileHash string, chunks []ChunkPayload) (*FileIndexResponse, error) {
+	var result FileIndexResponse
+	err := c.post("/api/v1/project/file", map[string]any{
+		"project_id": projectID,
+		"file_hash":  fileHash,
+		"chunks":     chunks,
 	}, &result)
 	return &result, err
 }

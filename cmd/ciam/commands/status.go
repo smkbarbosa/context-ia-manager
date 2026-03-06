@@ -29,7 +29,19 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("  Total chunks:   %d\n", status.TotalChunks)
 		fmt.Printf("  Memories:       %d\n", status.MemoriesStored)
 		fmt.Printf("  Cache hits:     %d\n", status.CacheHits)
-		fmt.Printf("  Tokens saved:   ~%d\n", status.EstimatedTokensSaved)
+
+		// Token savings block — only shown once the API has served at least one search.
+		fmt.Println()
+		fmt.Println("  Token savings:")
+		fmt.Printf("    Project size (est.):  ~%d tokens\n", status.TotalProjectTokens)
+		fmt.Printf("    Served via search:     %d tokens\n", status.TokensServedViaSearch)
+		if status.TotalProjectTokens > 0 && status.TokensServedViaSearch > 0 {
+			pct := 100 - (status.TokensServedViaSearch*100)/status.TotalProjectTokens
+			fmt.Printf("    Reduction:            ~%d%% fewer tokens to the AI\n", pct)
+		} else if status.TotalProjectTokens > 0 {
+			fmt.Printf("    Reduction:            run a search to start tracking\n")
+		}
+		fmt.Printf("    Estimated saved:      ~%d tokens total\n", status.EstimatedTokensSaved)
 
 		if len(status.MCPStats) > 0 {
 			fmt.Println()

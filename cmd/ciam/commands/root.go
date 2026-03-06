@@ -33,4 +33,5 @@ func init() {
 	rootCmd.AddCommand(adrCmd)
 	rootCmd.AddCommand(prdCmd)
 	rootCmd.AddCommand(planCmd)
+	rootCmd.AddCommand(watchCmd)
 }

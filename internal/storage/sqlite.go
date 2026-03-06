@@ -44,6 +44,8 @@ type StatusMetrics struct {
 	MemoriesStored       int           `json:"memories_stored"`
 	CacheHits            int           `json:"cache_hits"`
 	EstimatedTokensSaved int           `json:"estimated_tokens_saved"`
+	TokensServedViaSearch int64         `json:"tokens_served_via_search"`
+	TotalProjectTokens   int64         `json:"total_project_tokens"`
 	MCPStats             []MCPToolStat `json:"mcp_tools,omitempty"`
 }
 
@@ -76,10 +78,12 @@ func (db *DB) migrate() error {
 			chunk_type  TEXT NOT NULL DEFAULT 'generic',
 			content     TEXT NOT NULL,
 			embedding   BLOB,
+			file_hash   TEXT NOT NULL DEFAULT '',
 			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_chunks_project ON chunks(project_id);
 		CREATE INDEX IF NOT EXISTS idx_chunks_type    ON chunks(project_id, chunk_type);
+		CREATE INDEX IF NOT EXISTS idx_chunks_file    ON chunks(project_id, file_path);
 
 		CREATE TABLE IF NOT EXISTS memories (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,7 +113,17 @@ func (db *DB) migrate() error {
 			PRIMARY KEY (tool_name, query)
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Incremental migrations — silently ignored if column/index already exists.
+	db.conn.Exec(`ALTER TABLE chunks ADD COLUMN file_hash TEXT NOT NULL DEFAULT ''`) //nolint:errcheck
+
+	// Ensure token-tracking key exists in metrics table.
+	db.conn.Exec(`INSERT OR IGNORE INTO metrics (key, value) VALUES ('tokens_served_via_search', 0)`) //nolint:errcheck
+
+	return nil
 }
 
 // MCPToolStat holds metrics for a single MCP tool.
@@ -235,6 +249,67 @@ func (db *DB) UpsertChunks(projectID string, chunks []Chunk) error {
 	return tx.Commit()
 }
 
+// GetFileHash returns the stored content hash for a specific file,
+// or "" if the file has not been indexed yet.
+func (db *DB) GetFileHash(projectID, filePath string) string {
+	var hash string
+	db.conn.QueryRow( //nolint:errcheck
+		`SELECT COALESCE(file_hash, '') FROM chunks WHERE project_id = ? AND file_path = ? LIMIT 1`,
+		projectID, filePath,
+	).Scan(&hash)
+	return hash
+}
+
+// UpsertFileChunks replaces chunks for a single file atomically.
+// Returns (false, nil) when the file hash is unchanged — nothing to do.
+func (db *DB) UpsertFileChunks(projectID, filePath, newHash string, chunks []Chunk) (bool, error) {
+	if newHash != "" && db.GetFileHash(projectID, filePath) == newHash {
+		return false, nil // content unchanged, skip embedding
+	}
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(
+		`DELETE FROM chunks WHERE project_id = ? AND file_path = ?`, projectID, filePath,
+	); err != nil {
+		return false, err
+	}
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO chunks (project_id, file_path, chunk_type, content, embedding, file_hash)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`)
+	if err != nil {
+		return false, err
+	}
+	defer stmt.Close()
+
+	for _, c := range chunks {
+		blob, err := json.Marshal(c.Embedding)
+		if err != nil {
+			return false, err
+		}
+		if _, err := stmt.Exec(projectID, c.FilePath, c.ChunkType, c.Content, blob, newHash); err != nil {
+			return false, err
+		}
+	}
+
+	return true, tx.Commit()
+}
+
+// IncrMetric atomically increments a named counter in the metrics table.
+func (db *DB) IncrMetric(key string, delta int64) {
+	db.conn.Exec( //nolint:errcheck
+		`INSERT INTO metrics (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = value + ?`,
+		key, delta, delta,
+	)
+}
+
 // SearchChunks returns the top-k chunks ranked by cosine similarity to queryVec.
 func (db *DB) SearchChunks(projectID string, queryVec []float32, chunkType string, limit int) ([]Chunk, error) {
 	q := `SELECT id, file_path, chunk_type, content, embedding FROM chunks WHERE project_id = ?`
@@ -342,8 +417,21 @@ func (db *DB) Metrics() (*StatusMetrics, error) {
 		return nil, fmt.Errorf("memory metrics: %w", err)
 	}
 
-	// rough estimate: average ~200 tokens per chunk, stored once, reused many times
-	m.EstimatedTokensSaved = m.TotalChunks * 180
+	// Approximate project size in tokens (avg chunk ≈ 400 chars ≈ 100 tokens).
+	row = db.conn.QueryRow(`SELECT COALESCE(SUM(LENGTH(content)), 0) FROM chunks`)
+	var totalChars int64
+	row.Scan(&totalChars) //nolint:errcheck
+	m.TotalProjectTokens = totalChars / 4
+
+	// Tokens actually served to the AI via search results.
+	db.conn.QueryRow( //nolint:errcheck
+		`SELECT COALESCE(value, 0) FROM metrics WHERE key = 'tokens_served_via_search'`,
+	).Scan(&m.TokensServedViaSearch)
+
+	// Estimated savings = full project - what was actually served.
+	if m.TotalProjectTokens > m.TokensServedViaSearch {
+		m.EstimatedTokensSaved = int(m.TotalProjectTokens - m.TokensServedViaSearch)
+	}
 
 	mcpStats, err := db.MCPStats()
 	if err == nil {
