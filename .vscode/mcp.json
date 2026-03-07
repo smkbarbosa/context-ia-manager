@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "ciam": {
+      "args": [
+        "mcp"
+      ],
+      "command": "/home/samuel/go/bin/ciam",
+      "env": {
+        "CIAM_API_URL": "http://localhost:8080",
+        "CIAM_OLLAMA_URL": "http://localhost:11434",
+        "CIAM_OLLAMA_MODEL": "nomic-embed-text",
+        "CIAM_CODE_MODEL": "qwen2.5-coder:1.5b",
+        "CIAM_PROJECT_PATH": "${workspaceFolder}"
+      }
+    }
+  }
+}

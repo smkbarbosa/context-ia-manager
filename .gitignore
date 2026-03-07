@@ -3,7 +3,6 @@ bin/
 /ciam
 /ciam-api
 ARTIGO.md
-docs/
 
 # Output do go build
 *.exe
