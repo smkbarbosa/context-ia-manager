@@ -133,7 +133,9 @@ var indexCmd = &cobra.Command{
 			}
 			fmt.Printf("  [%d/%d] chunks %d–%d... ", b+1, batches, start+1, end)
 
-			result, err := client.IndexChunks(projectID, indexType, payload[start:end])
+			// reset=true only on the first batch so the server clears stale
+			// data before the new index; subsequent batches just append.
+			result, err := client.IndexChunks(projectID, indexType, payload[start:end], b == 0)
 			if err != nil {
 				fmt.Println("FAILED")
 				return fmt.Errorf("batch %d failed: %w", b+1, err)

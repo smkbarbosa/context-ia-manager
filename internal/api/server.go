@@ -158,10 +158,13 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // handleChunks receives pre-chunked text from the CLI (which ran on the host),
 // generates embeddings via Ollama and stores everything in SQLite.
 // This is the primary indexing path when the API runs inside Docker.
+// Set reset=true on the first batch of a full re-index to clear stale data;
+// subsequent batches should send reset=false so they append rather than wipe.
 func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ProjectID   string `json:"project_id"`
 		ProjectType string `json:"project_type"`
+		Reset       bool   `json:"reset"`
 		Chunks      []struct {
 			FilePath  string `json:"file_path"`
 			ChunkType string `json:"chunk_type"`
@@ -181,9 +184,18 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear existing chunks when this is the first batch of a full re-index.
+	if req.Reset {
+		if err := s.db.ClearProjectChunks(req.ProjectID); err != nil {
+			writeError(w, http.StatusInternalServerError, "clear failed: "+err.Error())
+			return
+		}
+		log.Printf("[index] project=%s cleared for full re-index", req.ProjectID)
+	}
+
 	const batchSize = 20
 	total := len(req.Chunks)
-	log.Printf("[index] project=%s total_chunks=%d batch_size=%d", req.ProjectID, total, batchSize)
+	log.Printf("[index] project=%s total_chunks=%d batch_size=%d reset=%v", req.ProjectID, total, batchSize, req.Reset)
 
 	var indexed int
 	for start := 0; start < total; start += batchSize {
@@ -221,7 +233,7 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 				goodChunks = append(goodChunks, c)
 			}
 			if len(goodChunks) > 0 {
-				if err := s.db.UpsertChunks(req.ProjectID, goodChunks); err != nil {
+				if err := s.db.AppendChunks(req.ProjectID, goodChunks); err != nil {
 					writeError(w, http.StatusInternalServerError, err.Error())
 					return
 				}
@@ -233,7 +245,7 @@ func (s *Server) handleChunks(w http.ResponseWriter, r *http.Request) {
 		for i := range chunks {
 			chunks[i].Embedding = vectors[i]
 		}
-		if err := s.db.UpsertChunks(req.ProjectID, chunks); err != nil {
+		if err := s.db.AppendChunks(req.ProjectID, chunks); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

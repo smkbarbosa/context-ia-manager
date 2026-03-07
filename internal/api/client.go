@@ -94,11 +94,14 @@ type ChunkPayload struct {
 // IndexChunks sends locally-produced chunks to the API for embedding + storage.
 // Use this instead of Index when the API runs inside Docker and cannot access
 // the host filesystem.
-func (c *Client) IndexChunks(projectID, projectType string, chunks []ChunkPayload) (*IndexResponse, error) {
+// Set reset=true on the first batch so the server clears stale data before
+// appending; subsequent batches must pass reset=false.
+func (c *Client) IndexChunks(projectID, projectType string, chunks []ChunkPayload, reset bool) (*IndexResponse, error) {
 	var result IndexResponse
 	err := c.post("/api/v1/project/chunks", map[string]any{
 		"project_id":   projectID,
 		"project_type": projectType,
+		"reset":        reset,
 		"chunks":       chunks,
 	}, &result)
 	return &result, err

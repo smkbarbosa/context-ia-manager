@@ -226,18 +226,19 @@ func (db *DB) MCPStats() ([]MCPToolStat, error) {
 // Close closes the underlying connection.
 func (db *DB) Close() error { return db.conn.Close() }
 
-// UpsertChunks deletes existing chunks for the project+file and inserts the new ones.
-func (db *DB) UpsertChunks(projectID string, chunks []Chunk) error {
+// ClearProjectChunks removes all chunks for a project — call once before the first batch.
+func (db *DB) ClearProjectChunks(projectID string) error {
+	_, err := db.conn.Exec(`DELETE FROM chunks WHERE project_id = ?`, projectID)
+	return err
+}
+
+// AppendChunks inserts chunks without touching existing rows (use after ClearProjectChunks).
+func (db *DB) AppendChunks(projectID string, chunks []Chunk) error {
 	tx, err := db.conn.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-
-	// Remove old chunks for this project (full re-index)
-	if _, err := tx.Exec(`DELETE FROM chunks WHERE project_id = ?`, projectID); err != nil {
-		return err
-	}
 
 	stmt, err := tx.Prepare(`
 		INSERT INTO chunks (project_id, file_path, chunk_type, content, embedding)
@@ -259,6 +260,15 @@ func (db *DB) UpsertChunks(projectID string, chunks []Chunk) error {
 	}
 
 	return tx.Commit()
+}
+
+// UpsertChunks deletes existing chunks for the project and inserts the new ones.
+// Prefer ClearProjectChunks + AppendChunks for batched full re-indexes.
+func (db *DB) UpsertChunks(projectID string, chunks []Chunk) error {
+	if err := db.ClearProjectChunks(projectID); err != nil {
+		return err
+	}
+	return db.AppendChunks(projectID, chunks)
 }
 
 // GetFileHash returns the stored content hash for a specific file,

@@ -29,7 +29,7 @@ var upCmd = &cobra.Command{
 		fmt.Println(" ready.")
 
 		fmt.Println("Pulling embedding model (nomic-embed-text)...")
-		pull := exec.Command("docker", "compose", "exec", "ollama",
+		pull := exec.Command("docker", "compose", "exec", "-T", "ollama",
 			"ollama", "pull", "nomic-embed-text")
 		pull.Stdout = os.Stdout
 		pull.Stderr = os.Stderr
@@ -47,7 +47,7 @@ var upCmd = &cobra.Command{
 // waitForOllama polls `ollama list` until it succeeds or timeout is reached.
 func waitForOllama(maxSeconds int) error {
 	for i := 0; i < maxSeconds; i++ {
-		check := exec.Command("docker", "compose", "exec", "ollama", "ollama", "list")
+		check := exec.Command("docker", "compose", "exec", "-T", "ollama", "ollama", "list")
 		if check.Run() == nil {
 			return nil
 		}
