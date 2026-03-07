@@ -67,7 +67,8 @@ Os serviços ficam rodando em background. Você só precisa rodar `ciam up` uma 
 ```bash
 cd /seu/projeto-django
 ciam init
-# Gera .vscode/mcp.json — o VSCode/Antigravity reconhece automaticamente
+# Auto-detecta seu editor (VSCode, Cursor, Windsurf, Cline, OpenCode, Antigravity)
+# e gera/atualiza a configuração MCP apropriada. Use a flag -e para forçar um editor.
 ```
 
 ### 3. Indexe o projeto
@@ -257,7 +258,7 @@ ciam remember <text> # Salva na memória persistente
 ciam recall <query>  # Busca na memória
 ciam status          # Mostra métricas (chunks, memórias, tokens economizados)
 ciam mcp             # Inicia o servidor MCP em modo stdio (chamado pelo VSCode)
-ciam init            # Gera .vscode/mcp.json no diretório atual
+ciam init            # Auto-detecta o editor e gera a configuração MCP (suporta flag -e)
 
 # Knowledge management
 ciam adr new "<título>"                # Novo ADR (MADR template)
