@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/smkbarbosa/context-ia-manager/internal/cache"
@@ -117,4 +118,59 @@ func (c *Client) EmbedBatch(texts []string) ([][]float32, error) {
 			len(er.Embeddings), len(texts))
 	}
 	return er.Embeddings, nil
+}
+
+// generateRequest is the payload for /api/generate.
+type generateRequest struct {
+	Model   string          `json:"model"`
+	Prompt  string          `json:"prompt"`
+	Stream  bool            `json:"stream"`
+	Options generateOptions `json:"options"`
+}
+
+type generateOptions struct {
+	NumPredict  int     `json:"num_predict"`
+	Temperature float32 `json:"temperature"`
+}
+
+type generateResponse struct {
+	Response string `json:"response"`
+	Done     bool   `json:"done"`
+}
+
+// Generate calls /api/generate to produce a code draft using a local LLM.
+// codeModel must be a model installed in Ollama (e.g. "qwen2.5-coder:1.5b").
+// Returns an error if the model is empty or Ollama is unreachable.
+func (c *Client) Generate(prompt, codeModel string, maxTokens int) (string, error) {
+	if codeModel == "" {
+		return "", fmt.Errorf("CIAM_CODE_MODEL not set — run: ollama pull qwen2.5-coder:1.5b")
+	}
+	if maxTokens <= 0 {
+		maxTokens = 512
+	}
+	body, err := json.Marshal(generateRequest{
+		Model:  codeModel,
+		Prompt: prompt,
+		Stream: false,
+		Options: generateOptions{
+			NumPredict:  maxTokens,
+			Temperature: 0.2,
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Post(c.baseURL+"/api/generate", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("ollama unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("ollama /api/generate returned status %d", resp.StatusCode)
+	}
+	var gr generateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(gr.Response), nil
 }

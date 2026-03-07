@@ -59,6 +59,7 @@ reading files, writing code, or making architectural decisions.
 | "what is the plan?" | ciam_plan_search | |
 | "what research exists?" | ciam_research_search | |
 | "not sure which tool" | ciam_route("<your intent>") | auto-selects |
+| "use ciam draft" / "execute phase X" | ciam_draft | OPTIONAL — explicit only, NOT default |
 
 ## PRIORITY RULES
 
@@ -365,6 +366,30 @@ func (s *Server) registerTools(srv *server.MCPServer) {
 		),
 		s.withMetrics("ciam_compress", "", s.handleCompress),
 	)
+
+	srv.AddTool(
+		mcpgo.NewTool("ciam_draft",
+			mcpgo.WithDescription(
+				"OPTIONAL: Generate a speculative code draft via local Ollama LLM. "+
+					"Uses project code chunks, ADRs and an optional plan phase to build a contextualised prompt, "+
+					"then calls Ollama /api/generate. "+
+					"NOT part of the default workflow — call this ONLY when the user explicitly says "+
+					"\"use ciam draft\", \"generate a draft\", or \"execute phase X of plan\". "+
+					"Requires CIAM_CODE_MODEL env var set on the server (e.g. qwen2.5-coder:1.5b)."),
+			mcpgo.WithString("intent",
+				mcpgo.Required(),
+				mcpgo.Description("What to generate, e.g. \"Django view for user registration\"")),
+			mcpgo.WithString("project_path",
+				mcpgo.Description("Project path (defaults to workspace)")),
+			mcpgo.WithString("chunk_type",
+				mcpgo.Description("Filter code context by chunk type: model, view, task, serializer, …")),
+			mcpgo.WithString("plan_id",
+				mcpgo.Description("Plan ID to include as reference (e.g. Plan-001)")),
+			mcpgo.WithString("phase",
+				mcpgo.Description("Plan phase to reference (e.g. Fase 2)")),
+		),
+		s.withMetrics("ciam_draft", "intent", s.handleDraft),
+	)
 }
 
 func (s *Server) handleIndex(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -403,6 +428,7 @@ var routeTable = []routeEntry{
 	{[]string{"architecture", "decision", "adr", "why was", "why is"}, "ciam_adr_search", `{"query": "<topic>"}`, "Architecture decisions history"},
 	{[]string{"requirement", "prd", "acceptance", "feature spec", "product"}, "ciam_prd_search", `{"query": "<feature>"}`, "Product requirements"},
 	{[]string{"plan", "phase", "roadmap", "milestone"}, "ciam_plan_search", `{"query": "<feature>"}`, "Implementation plans"},
+	{[]string{"ciam draft", "draft", "generate draft", "executar fase", "execute phase", "speculative"}, "ciam_draft", `{"intent": "<what to implement>", "plan_id": "<Plan-ID>", "phase": "<Fase N>"}`, "Optional: generate local code draft via Ollama — only when user explicitly requests it"},
 	{[]string{"research", "benchmark", "library comparison", "external"}, "ciam_research_search", `{"query": "<topic>"}`, "Research docs"},
 	{[]string{"remember", "store", "save decision", "note"}, "ciam_remember", `{"content": "<what to remember>", "type": "decision"}`, "Persist a decision or note"},
 	{[]string{"recall", "past decision", "previous", "history"}, "ciam_recall", `{"query": "<topic>"}`, "Retrieve stored memory"},
@@ -499,6 +525,46 @@ func (s *Server) handleCompress(_ context.Context, req mcpgo.CallToolRequest) (*
 	return mcpgo.NewToolResultText(
 fmt.Sprintf("Compressed (%d%% reduction):\n\n%s", reduction, compressed),
 ), nil
+}
+
+func (s *Server) handleDraft(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	intent, err := req.RequireString("intent")
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
+	}
+	projectPath := req.GetString("project_path", s.cfg.ProjectPath)
+	projectID := filepath.Base(projectPath)
+
+	resp, err := s.client.Draft(api.DraftRequest{
+		ProjectID: projectID,
+		Intent:    intent,
+		ChunkType: req.GetString("chunk_type", ""),
+		PlanID:    req.GetString("plan_id", ""),
+		Phase:     req.GetString("phase", ""),
+		MaxTokens: req.GetInt("max_tokens", 512),
+	})
+	if err != nil {
+		return mcpgo.NewToolResultError("ciam_draft: " + err.Error()), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# ciam_draft — Rascunho gerado por Ollama\n\n")
+	if resp.PlanExcerpt != "" {
+		sb.WriteString("## Plano referenciado\n\n")
+		sb.WriteString(resp.PlanExcerpt)
+		sb.WriteString("\n\n---\n\n")
+	}
+	sb.WriteString("## Rascunho de código\n\n```\n")
+	sb.WriteString(resp.Draft)
+	sb.WriteString("\n```\n\n")
+	sb.WriteString(fmt.Sprintf(
+		"_Modelo: %s | Tokens prompt: ~%d | Tokens draft: ~%d | Contexto: %d arquivo(s)_\n\n",
+		resp.ModelUsed, resp.TokensInPrompt, resp.TokensInDraft, len(resp.ContextUsed),
+	))
+	sb.WriteString("**IMPORTANTE**: Este é um rascunho especulativo gerado localmente.\n" +
+		"Valide contra o plano e os ADRs antes de aceitar o código.\n")
+
+	return mcpgo.NewToolResultText(sb.String()), nil
 }
 
 func (s *Server) handleContext(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

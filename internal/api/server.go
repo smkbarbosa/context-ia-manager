@@ -75,6 +75,7 @@ func (s *Server) ListenAndServe(addr string) error {
 	mux.HandleFunc("GET /api/v1/status", s.handleStatus)
 	mux.HandleFunc("GET /api/v1/project/map", s.handleDjangoMap)
 	mux.HandleFunc("POST /api/v1/metrics/tool", s.handleRecordTool)
+	mux.HandleFunc("POST /api/v1/draft", s.handleDraft)
 	mux.HandleFunc("GET /status", s.handleStatusPage)
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -603,6 +604,145 @@ func (s *Server) handleStatusPage(w http.ResponseWriter, r *http.Request) {
 		"Metrics":       metrics,
 		"TotalMCPCalls": totalMCPCalls,
 		"Now":           time.Now().Format("02/01/2006 15:04:05"),
+	})
+}
+
+// handleDraft uses Ollama /api/generate to produce a speculative code draft,
+// enriched with the project's own code chunks, ADRs and, optionally, an
+// implementation‑plan excerpt.  The feature is disabled when CIAM_CODE_MODEL
+// is empty — callers receive a clear error message instead.
+func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.CodeModel == "" {
+		writeError(w, http.StatusServiceUnavailable,
+			"ciam_draft is disabled: set CIAM_CODE_MODEL to a model installed in Ollama (e.g. qwen2.5-coder:1.5b)")
+		return
+	}
+
+	var req struct {
+		ProjectID string `json:"project_id"`
+		Intent    string `json:"intent"`
+		ChunkType string `json:"chunk_type"`
+		PlanID    string `json:"plan_id"`
+		Phase     string `json:"phase"`
+		MaxTokens int    `json:"max_tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Intent == "" {
+		writeError(w, http.StatusBadRequest, "intent is required")
+		return
+	}
+	if req.MaxTokens <= 0 {
+		req.MaxTokens = 512
+	}
+
+	// draftSearch embeds query and returns top-k chunks via hybrid ranking.
+	draftSearch := func(query, chunkType string, limit int) ([]storage.Chunk, error) {
+		vec, err := s.embedder.Embed(query)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := s.db.SearchChunks(req.ProjectID, vec, chunkType, limit*3)
+		if err != nil {
+			return nil, err
+		}
+		results := search.Hybrid(query, raw)
+		if len(results) > limit {
+			results = results[:limit]
+		}
+		out := make([]storage.Chunk, len(results))
+		for i, rr := range results {
+			out[i] = storage.Chunk{FilePath: rr.FilePath, ChunkType: rr.ChunkType, Content: rr.Content}
+		}
+		return out, nil
+	}
+
+	// ── 1. Code chunks ──────────────────────────────────────────────────────
+	codeChunks, err := draftSearch(req.Intent, req.ChunkType, 4)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "code search failed: "+err.Error())
+		return
+	}
+
+	// ── 2. ADR chunks (non-fatal) ────────────────────────────────────────────
+	adrChunks, _ := draftSearch(req.Intent, "adr", 2)
+
+	// ── 3. Plan excerpt (optional) ──────────────────────────────────────────
+	var planExcerpt string
+	var planPaths []string
+	if req.PlanID != "" {
+		planQuery := req.PlanID
+		if req.Phase != "" {
+			planQuery += " " + req.Phase
+		}
+		planChunks, _ := draftSearch(planQuery, "plan", 2)
+		for _, pc := range planChunks {
+			planExcerpt += fmt.Sprintf("[%s]\n%s\n\n", filepath.Base(pc.FilePath), pc.Content)
+			planPaths = append(planPaths, pc.FilePath)
+		}
+		planExcerpt = strings.TrimSpace(planExcerpt)
+	}
+
+	// ── 4. Build prompt ─────────────────────────────────────────────────────
+	var contextUsed []string
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("### Contexto do projeto (%s)\n", req.ProjectID))
+	for _, c := range codeChunks {
+		sb.WriteString(fmt.Sprintf("\n[chunk: %s (%s)]\n%s\n", c.FilePath, c.ChunkType, c.Content))
+		contextUsed = append(contextUsed, c.FilePath)
+	}
+
+	if len(adrChunks) > 0 {
+		sb.WriteString("\n### Decisões de arquitetura (ADR)\n")
+		for _, c := range adrChunks {
+			sb.WriteString(fmt.Sprintf("\n[%s]\n%s\n", filepath.Base(c.FilePath), c.Content))
+			contextUsed = append(contextUsed, c.FilePath)
+		}
+	}
+
+	if planExcerpt != "" {
+		phaseLabel := ""
+		if req.Phase != "" {
+			phaseLabel = " — " + req.Phase
+		}
+		sb.WriteString(fmt.Sprintf("\n### Plano de implementação referenciado\n[%s%s]\n%s\n", req.PlanID, phaseLabel, planExcerpt))
+		contextUsed = append(contextUsed, planPaths...)
+	}
+
+	phaseHint := ""
+	if req.PlanID != "" {
+		phaseHint = fmt.Sprintf(" alinhado com %s", req.PlanID)
+		if req.Phase != "" {
+			phaseHint += "/" + req.Phase
+		}
+	}
+	sb.WriteString(fmt.Sprintf(
+		"\n### Tarefa\nGere APENAS o código que implementa: %s%s.\n"+
+			"Inclua um comentário no topo: `# draft gerado por ciam_draft"+
+			phaseHint+"`\n"+
+			"Siga os padrões do projeto demonstrados nos chunks acima.",
+		req.Intent, phaseHint,
+	))
+
+	prompt := sb.String()
+
+	// ── 5. Generate via Ollama ──────────────────────────────────────────────
+	draft, err := s.embedder.Generate(prompt, s.cfg.CodeModel, req.MaxTokens)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "generation failed: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"draft":            draft,
+		"plan_excerpt":     planExcerpt,
+		"context_used":     contextUsed,
+		"tokens_in_prompt": len(strings.Fields(prompt)),
+		"tokens_in_draft":  len(strings.Fields(draft)),
+		"model_used":       s.cfg.CodeModel,
 	})
 }
 

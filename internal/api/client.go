@@ -172,6 +172,34 @@ func (c *Client) RecordTool(tool, query string, latencyMs int64, isError bool) e
 	}, nil)
 }
 
+// DraftRequest is the payload for /api/v1/draft.
+type DraftRequest struct {
+	ProjectID string `json:"project_id"`
+	Intent    string `json:"intent"`
+	ChunkType string `json:"chunk_type,omitempty"`
+	PlanID    string `json:"plan_id,omitempty"`
+	Phase     string `json:"phase,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
+// DraftResponse is the result from /api/v1/draft.
+type DraftResponse struct {
+	Draft         string   `json:"draft"`
+	PlanExcerpt   string   `json:"plan_excerpt,omitempty"`
+	ContextUsed   []string `json:"context_used"`
+	TokensInPrompt int     `json:"tokens_in_prompt"`
+	TokensInDraft  int     `json:"tokens_in_draft"`
+	ModelUsed      string  `json:"model_used"`
+}
+
+// Draft calls the API to generate a speculative code draft using Ollama.
+// Returns an error if CIAM_CODE_MODEL is not set on the server.
+func (c *Client) Draft(req DraftRequest) (*DraftResponse, error) {
+	var result DraftResponse
+	err := c.post("/api/v1/draft", req, &result)
+	return &result, err
+}
+
 // Status returns service metrics.
 func (c *Client) Status() (*StatusResponse, error) {
 	req, err := http.NewRequest(http.MethodGet, c.base+"/api/v1/status", nil)

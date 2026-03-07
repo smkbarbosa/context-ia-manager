@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/smkbarbosa/context-ia-manager/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -35,6 +36,19 @@ var upCmd = &cobra.Command{
 		pull.Stderr = os.Stderr
 		if err := pull.Run(); err != nil {
 			return fmt.Errorf("model pull failed: %w", err)
+		}
+
+		cfg := config.Load()
+		if cfg.CodeModel != "" {
+			fmt.Printf("Pulling code model (%s)...\n", cfg.CodeModel)
+			pull2 := exec.Command("docker", "compose", "exec", "-T", "ollama",
+				"ollama", "pull", cfg.CodeModel)
+			pull2.Stdout = os.Stdout
+			pull2.Stderr = os.Stderr
+			if err := pull2.Run(); err != nil {
+				// non-fatal: embedding still works without code model
+				fmt.Printf("warning: code model pull failed (%v) — ciam_draft will be unavailable\n", err)
+			}
 		}
 
 		fmt.Println("\nAll services ready.")
