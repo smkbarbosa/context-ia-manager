@@ -133,6 +133,7 @@ Quando o VSCode abre um workspace com `.vscode/mcp.json`, o assistente tem acess
 | `ciam_plan_search` | Busca em planos de implementação |
 | `ciam_research_search` | Busca em documentos de pesquisa (`docs/research/`) |
 | `ciam_decision_context` | **Tudo em uma chamada**: código + ADR + PRD + plans para um query. Use antes de implementar qualquer coisa. |
+| `ciam_draft` | **Opcional**: gera um rascunho de código via Ollama local, com contexto do projeto + ADRs + plano referenciado. Ative com `CIAM_CODE_MODEL`. |
 
 ---
 
@@ -242,6 +243,7 @@ Isso permite filtros precisos: `ciam search "autenticação" --type view` retorn
 | `CIAM_API_URL` | `http://localhost:8080` | URL da ciam API |
 | `CIAM_OLLAMA_URL` | `http://localhost:11434` | URL do Ollama |
 | `CIAM_OLLAMA_MODEL` | `nomic-embed-text` | Modelo de embeddings |
+| `CIAM_CODE_MODEL` | _(vazio)_ | Modelo LLM para `ciam_draft` (ex: `qwen2.5-coder:1.5b`). Vazio = recurso desabilitado. |
 | `CIAM_DB_PATH` | `~/.local/share/ciam/ciam.db` | Caminho do banco SQLite |
 | `CIAM_PROJECT_PATH` | `.` | Projeto padrão (setado pelo VSCode via mcp.json) |
 
@@ -268,6 +270,12 @@ ciam prd new "<título>"                # Novo PRD
 ciam prd list                           # Lista PRDs
 ciam plan new "<título>" [--prd PRD-001]  # Novo plano
 ciam plan list                          # Lista planos
+
+# ciam_draft — rascunho especulativo via Ollama (opcional)
+export CIAM_CODE_MODEL=qwen2.5-coder:1.5b
+ciam draft "view de registro de usuário"
+ciam draft "serializer de pedido" --plan Plan-001 --phase "Fase 2"
+ciam draft "celery task de envio de email" --type task --max-tokens 1024
 ```
 
 ```bash
@@ -294,7 +302,7 @@ context-ia-manager/
 │   ├── cache/              # Cache L1 (in-memory) + L2 (SQLite)
 │   ├── config/             # Configuração via env vars
 │   ├── docs/               # Gerenciamento de ADR/PRD/plans + templates embed
-│   ├── embeddings/         # Cliente Ollama (embed + batch paralelo)
+│   ├── embeddings/         # Cliente Ollama (embed + batch paralelo + generate para ciam_draft)
 │   ├── indexer/
 │   │   ├── indexer.go      # Indexer genérico + detecção de tipo
 │   │   ├── django/         # Indexer Django-aware
